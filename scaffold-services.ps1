@@ -1,0 +1,163 @@
+# One-shot scaffolder for the 19 business service crates.
+# Run once; safe to re-run (overwrites Cargo.toml + main.rs).
+# Usage:  pwsh -File .\scaffold-services.ps1   (from kabipay-svc/)
+
+$ErrorActionPreference = 'Stop'
+
+$services = @(
+    @{ name = 'operator';     port = 4010; desc = 'Operator plane portal (KabiPay internal staff-facing GraphQL subgraph for tenant management, pricing, billing ops).' },
+    @{ name = 'tenant';       port = 4011; desc = 'Tenant + subscription management. Provisions tenant schemas, enforces contracted_seats hard-block.' },
+    @{ name = 'billing';      port = 4012; desc = 'Billing cycle cron + invoice generation + payment gateway. Applies best-deal-wins discount logic at invoice time.' },
+    @{ name = 'employee';     port = 4013; desc = 'Employee core: profiles, org hierarchy, documents. Canonical source for EMPLOYEE.id (Gap A).' },
+    @{ name = 'leave';        port = 4014; desc = 'Leave types, policies, balances, accrual logs, requests (flows through workflow engine).' },
+    @{ name = 'attendance';   port = 4015; desc = 'Shifts, roster, attendance (with geo-fence), regularisation, comp-off balance.' },
+    @{ name = 'payroll';      port = 4016; desc = 'Salary components/structures, payroll cycle, payslip generation (PF / ESI / TDS).' },
+    @{ name = 'tax';          port = 4017; desc = 'Tax config versions, slabs, annual computation, statutory filings, Form 16 generation.' },
+    @{ name = 'benefits';     port = 4018; desc = 'Benefit plans (health, insurance), enrollments, claim processing.' },
+    @{ name = 'expense';      port = 4019; desc = 'Expense categories, policies, claims with multi-level approval via workflow engine.' },
+    @{ name = 'recruitment';  port = 4020; desc = 'Applicant tracking system: postings, applications, interviews, scorecards, offers, referrals, job board sync.' },
+    @{ name = 'performance';  port = 4021; desc = 'Review cycles, goals, KPIs, 360 feedback, final ratings.' },
+    @{ name = 'lms';          port = 4022; desc = 'Learning: courses, modules, paths, enrollments, progress, certifications, skills inventory.' },
+    @{ name = 'succession';   port = 4023; desc = 'Competency framework, talent pools, succession plans, career paths.' },
+    @{ name = 'compensation'; port = 4024; desc = 'Salary bands, compensation review cycles, bonus plans/payouts, equity grants.' },
+    @{ name = 'assets';       port = 4025; desc = 'Asset catalog, allocation to employees, return logs with condition tracking.' },
+    @{ name = 'grievance';    port = 4026; desc = 'Grievance cases (POSH-aware), participants, investigation actions, disciplinary outcomes.' },
+    @{ name = 'workflow';     port = 4027; desc = 'Workflow engine: workflow definitions, steps, approval matrix, approval rules, workflow instances. Drives state on all approvable entities.' },
+    @{ name = 'notification'; port = 4028; desc = 'Notifications per user, tenant announcements, webhook subscriptions + delivery logs.' }
+)
+
+$cargoTemplate = @'
+[package]
+name = "kabipay-__SERVICE__"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kabipay-__SERVICE__"
+path = "src/main.rs"
+
+[dependencies]
+kabipay-common.workspace = true
+async-graphql.workspace = true
+async-graphql-axum.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+'@
+
+# Note: the GraphQL method name is auto-camelCased by async-graphql (xxx_health -> xxxHealth).
+$mainTemplate = @'
+//! kabipay-__SERVICE__
+//!
+//! __DESC__
+//!
+//! Exposes a federated async-graphql subgraph on port __PORT__ (override via __PORT_ENV__).
+//! This is a Phase-1 scaffold: only `__SERVICE_SNAKE___health` is wired. Entities, resolvers,
+//! and services bodies are added as the domain migration for this area lands.
+
+use async_graphql::{EmptyMutation, EmptySubscription, Object, Schema};
+use async_graphql_axum::GraphQL;
+use axum::{routing::{get, post_service}, Router};
+use kabipay_common::telemetry::init_tracing;
+use std::net::SocketAddr;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+
+mod entities;
+mod resolvers;
+mod services;
+
+const SERVICE_NAME: &str = "kabipay-__SERVICE__";
+const DEFAULT_PORT: u16 = __PORT__;
+const PORT_ENV: &str = "__PORT_ENV__";
+
+pub struct QueryRoot;
+
+#[Object]
+impl QueryRoot {
+    /// Liveness probe for this federated subgraph.
+    async fn __SERVICE_SNAKE___health(&self) -> &'static str {
+        "ok"
+    }
+}
+
+pub type AppSchema = Schema<QueryRoot, EmptyMutation, EmptySubscription>;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    init_tracing(SERVICE_NAME);
+
+    let port: u16 = std::env::var(PORT_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription)
+        .enable_federation()
+        .finish();
+
+    let app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/graphql", post_service(GraphQL::new(schema)))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http());
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!(%addr, service = SERVICE_NAME, "subgraph listening");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+'@
+
+$modStub = "// Module stub. Contents are added as Phase 2+ work lands the relevant domain migrations.`n"
+
+foreach ($svc in $services) {
+    $name   = $svc.name
+    $port   = $svc.port
+    $desc   = $svc.desc
+    $root   = Join-Path $PSScriptRoot "crates\kabipay-$name"
+    $srcDir = Join-Path $root 'src'
+
+    New-Item -ItemType Directory -Force -Path (Join-Path $srcDir 'entities')  | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $srcDir 'resolvers') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $srcDir 'services')  | Out-Null
+
+    # Map hyphen-less name to snake_case identifier (same as name here, no hyphens allowed).
+    $snake    = $name
+    $portEnv  = "KABIPAY_$($name.ToUpper())_PORT"
+
+    $cargo = $cargoTemplate -replace '__SERVICE__', $name
+    $main  = $mainTemplate `
+        -replace '__SERVICE__', $name `
+        -replace '__SERVICE_SNAKE__', $snake `
+        -replace '__PORT__', $port `
+        -replace '__PORT_ENV__', $portEnv `
+        -replace '__DESC__', $desc
+
+    Set-Content -Path (Join-Path $root 'Cargo.toml')          -Value $cargo   -Encoding UTF8 -NoNewline
+    Set-Content -Path (Join-Path $srcDir 'main.rs')           -Value $main    -Encoding UTF8 -NoNewline
+    Set-Content -Path (Join-Path $srcDir 'entities\mod.rs')   -Value $modStub -Encoding UTF8 -NoNewline
+    Set-Content -Path (Join-Path $srcDir 'resolvers\mod.rs')  -Value $modStub -Encoding UTF8 -NoNewline
+    Set-Content -Path (Join-Path $srcDir 'services\mod.rs')   -Value $modStub -Encoding UTF8 -NoNewline
+
+    Write-Host "scaffolded kabipay-$name (port $port)"
+}
+
+Write-Host ''
+Write-Host "All 19 service crates scaffolded. Run 'cargo check --workspace' to verify."

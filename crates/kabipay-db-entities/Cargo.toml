@@ -1,0 +1,16 @@
+[package]
+name = "kabipay-db-entities"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SeaORM entity models aligned with kabipay-database Liquibase migrations (tenant + selected ops tables)."
+
+[dependencies]
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true

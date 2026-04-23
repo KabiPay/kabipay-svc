@@ -1,0 +1,32 @@
+//! Tenant-schema table models (Liquibase domains 0005–0030).
+//! Generated — do not hand-edit; re-run `scripts/generate_db_entities.py`.
+
+pub mod prelude;
+pub use prelude::*;
+
+pub mod d0005_auth_rbac;
+pub mod d0006_org_hierarchy;
+pub mod d0007_employee_core;
+pub mod d0008_document_system;
+pub mod d0009_custom_fields;
+pub mod d0010_time_shift_roster;
+pub mod d0011_leave;
+pub mod d0012_payroll;
+pub mod d0013_tax_statutory;
+pub mod d0014_benefits;
+pub mod d0015_expense;
+pub mod d0016_recruitment;
+pub mod d0017_onboarding_offboarding;
+pub mod d0018_performance;
+pub mod d0019_lms;
+pub mod d0020_succession;
+pub mod d0021_compensation;
+pub mod d0022_assets;
+pub mod d0023_grievance;
+pub mod d0024_analytics;
+pub mod d0025_workflow;
+pub mod d0026_integrations;
+pub mod d0027_communication_audit;
+pub mod d0028_master_data;
+pub mod d0029_file_storage;
+pub mod d0030_outbox_events;

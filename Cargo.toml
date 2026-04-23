@@ -1,0 +1,97 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kabipay-common",
+    "crates/kabipay-db-entities",
+    "crates/kabipay-auth",
+    "crates/kabipay-operator",
+    "crates/kabipay-tenant",
+    "crates/kabipay-billing",
+    "crates/kabipay-employee",
+    "crates/kabipay-leave",
+    "crates/kabipay-attendance",
+    "crates/kabipay-payroll",
+    "crates/kabipay-tax",
+    "crates/kabipay-benefits",
+    "crates/kabipay-expense",
+    "crates/kabipay-recruitment",
+    "crates/kabipay-performance",
+    "crates/kabipay-lms",
+    "crates/kabipay-succession",
+    "crates/kabipay-compensation",
+    "crates/kabipay-assets",
+    "crates/kabipay-grievance",
+    "crates/kabipay-workflow",
+    "crates/kabipay-notification",
+]
+
+# Single source of truth for dependency versions across the workspace.
+# Pinned to the latest stable at the time of scaffolding. Bump centrally.
+[workspace.dependencies]
+# GraphQL stack
+async-graphql = { version = "7.0", features = ["apollo_tracing", "uuid", "chrono", "decimal"] }
+# 7.1+ transitively pulls axum 0.8; keep =7.0.x until we bump axum across the workspace.
+async-graphql-axum = "=7.0.13"
+
+# HTTP + async runtime
+axum = { version = "0.7", features = ["macros", "tokio"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id"] }
+hyper = "1"
+
+# Database / ORM
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "rust_decimal"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Primitives
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Auth
+jsonwebtoken = "9"
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+
+# Config / env
+dotenvy = "0.15"
+config = { version = "0.14", default-features = false, features = ["toml", "yaml"] }
+
+# Caching for tenant DB connections
+dashmap = "6"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Workspace-local crates (referenced as path deps from each service)
+kabipay-common = { path = "crates/kabipay-common" }
+kabipay-db-entities = { path = "crates/kabipay-db-entities" }
+kabipay-auth = { path = "crates/kabipay-auth" }
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.89"
+license = "UNLICENSED"
+authors = ["KabiPay Engineering"]
+
+# Release profile tuned for smaller binaries in Docker images.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
