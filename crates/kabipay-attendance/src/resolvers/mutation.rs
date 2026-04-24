@@ -2,16 +2,20 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::{
+        client_request_hints, require_client_claims, require_tenant_id, resolve_client_employee_id,
+        tenant_db,
+    },
     KabiPayError,
 };
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    AddManualAttendanceSegmentInput, AttendanceDto, CreateTimesheetEntryInput, PunchTodayInput,
-    TimesheetEntryDto,
+    AddManualAttendanceSegmentInput, AttendanceDto, AttendancePunchPolicyDto,
+    CreateTimesheetEntryInput, PunchTodayInput, TimesheetEntryDto,
+    UpsertAttendancePunchPolicyInput,
 };
-use crate::services::attendance_service;
+use crate::services::{attendance_service, punch_policy};
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
@@ -44,10 +48,41 @@ impl MutationRoot {
             Some(i) => attendance_service::parse_punch_geo(i.latitude, i.longitude)
                 .map_err(KabiPayError::into_graphql)?,
         };
-        let m = attendance_service::punch_today(&db, tenant_id, employee_id, geo)
+        let hints = client_request_hints(ctx);
+        let client_ip = hints.client_ip.as_deref();
+        let m = attendance_service::punch_today(&db, tenant_id, employee_id, geo, client_ip)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(AttendanceDto::from(m))
+    }
+
+    /// Create or update the tenant’s live punch policy (geofence + IP allowlist).
+    async fn upsert_attendance_punch_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertAttendancePunchPolicyInput,
+    ) -> Result<AttendancePunchPolicyDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_configure_attendance_punch_policy() {
+            return Err(KabiPayError::Forbidden(
+                "attendance punch policy is restricted to HR / tenant admins".into(),
+            )
+            .into_graphql());
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let m = punch_policy::upsert_punch_policy(
+            &db,
+            tenant_id,
+            input.is_enforced,
+            input.site_latitude,
+            input.site_longitude,
+            input.max_distance_meters,
+            input.ip_allowlist,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(AttendancePunchPolicyDto::from(m))
     }
 
     /// Add a full **in + out** segment for a `workDate` (no future dates) when the user did not

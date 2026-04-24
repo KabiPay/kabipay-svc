@@ -22,6 +22,7 @@ use axum::{
 };
 use kabipay_common::{
     db::{connect_ops_db, TenantDbCache},
+    load_dotenv,
     subgraph::{ops_dsn_from_env, tenant_db_config_from_env},
     telemetry::init_tracing,
 };
@@ -39,18 +40,21 @@ use state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    load_dotenv();
     init_tracing("kabipay-auth");
 
     let port: u16 = std::env::var("KABIPAY_AUTH_PORT")
         .unwrap_or_else(|_| "4001".to_string())
         .parse()
         .unwrap_or(4001);
+    tracing::info!(port, "kabipay-auth resolved listen port");
 
     let dsn = ops_dsn_from_env();
+    tracing::info!("kabipay-auth connecting to ops database (DSN omitted)");
     let ops_db = connect_ops_db(&dsn)
         .await
-        .map_err(|e| anyhow::anyhow!("kabipay-auth: failed to connect to ops DB at {dsn}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("kabipay-auth: failed to connect to ops DB: {e}"))?;
+    tracing::info!("kabipay-auth ops database pool ready");
 
     let app_state = AppState {
         ops_db,
@@ -78,9 +82,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!(%addr, "kabipay-auth listening");
+    tracing::info!(%addr, "kabipay-auth binding TCP listener");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "kabipay-auth listening, ready for connections");
     axum::serve(listener, app).await?;
     Ok(())
 }

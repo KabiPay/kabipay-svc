@@ -28,7 +28,7 @@ $RunLb = Join-Path $DatabaseDir 'run-liquibase.cjs'
 $SvcEnv = Join-Path $RepoRoot 'kabipay-svc\.env'
 $DbEnv = Join-Path $DatabaseDir '.env'
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is required" }
-if (-not (Test-Path $RunLb)) { throw "Missing run-liquibase.cjs — in kabipay-database: npm install" }
+if (-not (Test-Path $RunLb)) { throw "Missing run-liquibase.cjs - in kabipay-database run npm install" }
 
 function Import-DotEnvFile {
     param([string]$Path)

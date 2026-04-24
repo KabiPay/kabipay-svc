@@ -6,6 +6,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::entities::d0006_org_hierarchy::{department, designation};
 use crate::entities::d0007_employee_core::employee;
 use crate::entities::d0008_document_system::{document_type, employee_document};
+use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
 
 /// Federated `Employee` type. `id` is the canonical cross-service identifier (Gap A).
 #[derive(SimpleObject, Clone, Debug)]
@@ -23,6 +24,7 @@ pub struct EmployeeDto {
     pub date_of_joining: NaiveDate,
     pub department_id: Option<ID>,
     pub designation_id: Option<ID>,
+    pub reporting_manager_id: Option<ID>,
     pub user_id: Option<ID>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -87,6 +89,36 @@ impl From<employee_document::Model> for EmployeeDocumentDto {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "OnboardingChecklistItem")]
+pub struct OnboardingChecklistItemDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    pub task_name: String,
+    pub task_category: Option<String>,
+    pub assigned_to: Option<ID>,
+    pub is_completed: bool,
+    pub due_date: Option<NaiveDate>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl From<onboarding_checklist::Model> for OnboardingChecklistItemDto {
+    fn from(m: onboarding_checklist::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            task_name: m.task_name,
+            task_category: m.task_category,
+            assigned_to: m.assigned_to.map(|u| ID(u.to_string())),
+            is_completed: m.is_completed,
+            due_date: m.due_date,
+            completed_at: m.completed_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "Department")]
 pub struct DepartmentDto {
     pub id: ID,
@@ -106,6 +138,18 @@ impl From<department::Model> for DepartmentDto {
             parent_department_id: m.parent_department_id.map(|u| ID(u.to_string())),
         }
     }
+}
+
+/// Flat reporting-line row; clients build a tree from `reporting_manager_id`.
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "OrgChartRow")]
+pub struct OrgChartRowDto {
+    pub employee_id: ID,
+    pub employee_code: String,
+    pub full_name: String,
+    pub reporting_manager_id: Option<ID>,
+    pub department_name: Option<String>,
+    pub designation_title: Option<String>,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -140,6 +184,8 @@ pub struct CreateEmployeeInput {
     pub date_of_joining: NaiveDate,
     pub department_id: Option<ID>,
     pub designation_id: Option<ID>,
+    /// Must be another active employee in the tenant; cannot be self (enforced after id is chosen).
+    pub reporting_manager_id: Option<ID>,
     pub employment_type: Option<String>,
     /// Defaults to `ACTIVE` when omitted.
     pub status: Option<String>,
@@ -153,6 +199,8 @@ pub struct UpdateEmployeeInput {
     pub last_name: Option<String>,
     pub department_id: Option<ID>,
     pub designation_id: Option<ID>,
+    /// Omitted = leave unchanged; `null` = clear manager; id = set manager (cycle-safe).
+    pub reporting_manager_id: Option<Option<ID>>,
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<ID>,
@@ -185,6 +233,7 @@ impl From<employee::Model> for EmployeeDto {
             date_of_joining: m.date_of_joining,
             department_id: m.department_id.map(|id| ID(id.to_string())),
             designation_id: m.designation_id.map(|id| ID(id.to_string())),
+            reporting_manager_id: m.reporting_manager_id.map(|id| ID(id.to_string())),
             user_id: m.user_id.map(|id| ID(id.to_string())),
             created_at: m.created_at,
             updated_at: m.updated_at,

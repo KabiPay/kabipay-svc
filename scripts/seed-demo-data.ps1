@@ -18,14 +18,16 @@
         0012 payroll      : salary_component (BASIC/HRA), payroll_cycle (current month), demo payslip + TDS
         0013 tax          : tax_configuration_version, tax_slab x 2
         0014 benefits     : benefit_type, benefit_plan
-        0015 expense      : expense_category, expense (SUBMITTED)
+        0015 expense      : expense_category, expense (PENDING)
         0016 recruitment  : job_posting (OPEN), application (APPLIED)
+        0017 onboarding   : onboarding_checklist (demo tasks for demo employee)
         0018 performance  : review_cycle (ACTIVE), goal (IN_PROGRESS)
         0019 lms          : skill, course
         0020 succession   : competency, talent_pool
         0021 compensation : salary_band, compensation_review_cycle
         0022 assets       : asset_category, asset
         0023 grievance    : grievance_category, grievance_case
+        0033 travel       : travel_request (PENDING, demo employee)
         0025 workflow     : workflow, workflow_instance
         0027 comm/audit   : announcement, notification
 
@@ -190,6 +192,13 @@ $BenefitPlanId       = New-DeterministicUuid -Seed "${Schema}:benefit_plan:base"
 # Expense (0015)
 $ExpenseCategoryId   = New-DeterministicUuid -Seed "${Schema}:expense_category:travel"
 $ExpenseId           = New-DeterministicUuid -Seed "${Schema}:expense:1"
+
+# Onboarding (0017)
+$OnboardTask1Id      = New-DeterministicUuid -Seed "${Schema}:onboarding_checklist:1"
+$OnboardTask2Id      = New-DeterministicUuid -Seed "${Schema}:onboarding_checklist:2"
+
+# Travel request (0033)
+$TravelRequestId     = New-DeterministicUuid -Seed "${Schema}:travel_request:1"
 
 # Recruitment (0016)
 $JobPostingId        = New-DeterministicUuid -Seed "${Schema}:job_posting:swe"
@@ -500,10 +509,41 @@ INSERT INTO "$Schema".expense (
     amount, currency, expense_date, title, status, submitted_at
 ) VALUES (
     '$ExpenseId', '$TenantId', '$EmployeeId', '$ExpenseCategoryId',
-    4500, 'INR', CURRENT_DATE - INTERVAL '3 days', 'Client Visit - Cab & Meals', 'SUBMITTED', NOW()
+    4500, 'INR', CURRENT_DATE - INTERVAL '3 days', 'Client Visit - Cab & Meals', 'PENDING', NOW()
 ) ON CONFLICT (id) DO NOTHING;
 "@
-Invoke-TenantSql -Label "0015 expense (category + submitted expense)" -Sql $SqlExpense
+Invoke-TenantSql -Label "0015 expense (category + pending expense for approver demo)" -Sql $SqlExpense
+
+# =====================================================================
+# 7b. ONBOARDING (0017) — checklist tasks for demo employee
+# =====================================================================
+$SqlOnboarding = @"
+INSERT INTO "$Schema".onboarding_checklist (
+    id, tenant_id, employee_id, task_name, task_category,
+    assigned_to, is_completed, due_date
+) VALUES
+    ('$OnboardTask1Id', '$TenantId', '$EmployeeId', 'Complete profile & emergency contacts', 'HR', NULL, false, CURRENT_DATE + 7),
+    ('$OnboardTask2Id', '$TenantId', '$EmployeeId', 'Read employee handbook', 'Policy', NULL, false, CURRENT_DATE + 14)
+ON CONFLICT (id) DO NOTHING;
+"@
+Invoke-TenantSql -Label "0017 onboarding (checklist tasks)" -Sql $SqlOnboarding
+
+# =====================================================================
+# 7c. TRAVEL REQUEST (0033) — pending trip for approver demo
+#     Requires tenant Liquibase through 0033_travel_request on this schema.
+# =====================================================================
+$SqlTravel = @"
+INSERT INTO "$Schema".travel_request (
+    id, tenant_id, employee_id,
+    origin_location, destination_location, from_date, to_date,
+    purpose, estimated_amount, currency, status, submitted_at
+) VALUES (
+    '$TravelRequestId', '$TenantId', '$EmployeeId',
+    'Bengaluru', 'Mumbai', CURRENT_DATE + 10, CURRENT_DATE + 12,
+    'Bengaluru → Mumbai — QBR with customer team', 18500, 'INR', 'PENDING', NOW()
+) ON CONFLICT (id) DO NOTHING;
+"@
+Invoke-TenantSql -Label "0033 travel_request (pending demo)" -Sql $SqlTravel
 
 # =====================================================================
 # 8. RECRUITMENT (0016)

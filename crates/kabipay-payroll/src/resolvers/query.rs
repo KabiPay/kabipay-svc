@@ -145,4 +145,29 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)
     }
+
+    /// **India — monthly PF / ESI summary (CSV).** Payslip statutory columns (`pfEmployee`, `esiEmployee`, UAN, ESIC, …)
+    /// for every payslip in the payroll cycle matching `month` + `year`. Same RBAC as TDS export; not ECR / challan output.
+    async fn india_pf_esi_monthly_summary_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll statutory export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_pf_esi_monthly_summary_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
 }

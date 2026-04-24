@@ -17,6 +17,38 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+fn pool_max_connections(fallback: u32) -> u32 {
+    std::env::var("KABIPAY_DB_POOL_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(fallback)
+}
+
+fn pool_connect_timeout() -> Duration {
+    let secs: u64 = std::env::var("KABIPAY_DB_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    Duration::from_secs(secs.max(1))
+}
+
+fn pool_acquire_timeout() -> Duration {
+    let secs: u64 = std::env::var("KABIPAY_DB_ACQUIRE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    Duration::from_secs(secs.max(1))
+}
+
+fn tenant_pool_max_connections() -> u32 {
+    std::env::var("KABIPAY_TENANT_DB_POOL_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10)
+}
+
 /// Resolved view of a single tenant's database. Kept around the pooled
 /// connection so resolvers can query the caller's schema name without
 /// re-hitting `kabipay_ops.tenant_database`.
@@ -169,9 +201,10 @@ pub async fn resolve_tenant_handle(
 
     let url = fallback_cfg.url_for(&effective_host, &db_name);
     let mut opts = ConnectOptions::new(url);
-    opts.max_connections(10)
-        .min_connections(1)
-        .connect_timeout(Duration::from_secs(5))
+    opts.max_connections(tenant_pool_max_connections())
+        .min_connections(0)
+        .connect_timeout(pool_connect_timeout())
+        .acquire_timeout(pool_acquire_timeout())
         .idle_timeout(Duration::from_secs(300))
         .sqlx_logging(false)
         .set_schema_search_path(format!("{},kabipay_ops,public", schema_name));
@@ -210,9 +243,10 @@ pub fn derive_tenant_schema_name(tenant_id: Uuid) -> String {
 /// Build the single ops-plane connection. Called once at service startup.
 pub async fn connect_ops_db(dsn: &str) -> KabiPayResult<DatabaseConnection> {
     let mut opts = ConnectOptions::new(dsn.to_string());
-    opts.max_connections(20)
-        .min_connections(1)
-        .connect_timeout(Duration::from_secs(5))
+    opts.max_connections(pool_max_connections(20))
+        .min_connections(0)
+        .connect_timeout(pool_connect_timeout())
+        .acquire_timeout(pool_acquire_timeout())
         .idle_timeout(Duration::from_secs(300))
         .sqlx_logging(false)
         .set_schema_search_path("kabipay_ops,public");

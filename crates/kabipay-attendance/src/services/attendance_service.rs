@@ -167,7 +167,16 @@ pub async fn punch_today(
     tenant_id: Uuid,
     employee_id: Uuid,
     geo: Option<PunchGeo>,
+    client_ip: Option<&str>,
 ) -> KabiPayResult<attendance::Model> {
+    let policy = crate::services::punch_policy::find_punch_policy(db, tenant_id).await?;
+    let lat_lng = geo.as_ref().map(|g| (g.lat, g.lng));
+    crate::services::punch_policy::validate_live_punch_for_policy(
+        policy.as_ref(),
+        lat_lng,
+        client_ip,
+    )?;
+
     let now_ts = Utc::now();
     let today = now_ts.date_naive();
     let now_t = now_ts.naive_utc().time();

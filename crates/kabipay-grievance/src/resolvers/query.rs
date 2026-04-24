@@ -2,7 +2,9 @@
 
 use async_graphql::{Context, Object, Result};
 use kabipay_common::{
-    subgraph::{require_tenant_id, tenant_db},
+    subgraph::{
+        require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db,
+    },
     KabiPayError,
 };
 
@@ -30,6 +32,7 @@ impl QueryRoot {
         Ok(rows.into_iter().map(GrievanceCategoryDto::from).collect())
     }
 
+    /// HR / directory roles see tenant-wide cases; other employees see **their own** cases only.
     async fn grievance_cases(
         &self,
         ctx: &Context<'_>,
@@ -37,7 +40,17 @@ impl QueryRoot {
     ) -> Result<Vec<GrievanceCaseDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
-        let rows = grievance_service::list_cases(&db, tenant_id, limit)
+        let claims = require_client_claims(ctx)?;
+        let filter = if claims.can_manage_employee_directory() {
+            None
+        } else {
+            Some(
+                resolve_client_employee_id(ctx, &db, tenant_id)
+                    .await
+                    .map_err(KabiPayError::into_graphql)?,
+            )
+        };
+        let rows = grievance_service::list_cases(&db, tenant_id, limit, filter)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(GrievanceCaseDto::from).collect())

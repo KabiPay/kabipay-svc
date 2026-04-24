@@ -7,15 +7,16 @@ use kabipay_common::{
         data_scope_from_context, resolve_employee_scope_filter, resolve_viewer_employee,
     },
     context::SCOPE_RES_ATTENDANCE,
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    AttendanceDto, HolidayEntryDto, PunchDaySummaryDto, ShiftDto, TimesheetEntryDto,
+    AttendanceDto, AttendancePunchPolicyDto, HolidayEntryDto, PunchDaySummaryDto, ShiftDto,
+    TimesheetEntryDto,
 };
-use crate::services::attendance_service;
+use crate::services::{attendance_service, punch_policy};
 
 pub struct QueryRoot;
 
@@ -23,6 +24,26 @@ pub struct QueryRoot;
 impl QueryRoot {
     async fn attendance_health(&self) -> &'static str {
         "ok"
+    }
+
+    /// Live punch policy (geofence + IP). **HR / tenant admin only** — not exposed to every employee.
+    async fn attendance_punch_policy(&self, ctx: &Context<'_>) -> Result<AttendancePunchPolicyDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_configure_attendance_punch_policy() {
+            return Err(KabiPayError::Forbidden(
+                "attendance punch policy is restricted to HR / tenant admins".into(),
+            )
+            .into_graphql());
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let row = punch_policy::find_punch_policy(&db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(match row {
+            Some(m) => AttendancePunchPolicyDto::from(m),
+            None => AttendancePunchPolicyDto::not_configured(tenant_id),
+        })
     }
 
     /// List all shift templates for the caller's tenant.

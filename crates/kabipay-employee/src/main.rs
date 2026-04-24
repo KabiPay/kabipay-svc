@@ -1,4 +1,4 @@
-//! kabipay-employee — federated GraphQL (default `4013`) and
+﻿//! kabipay-employee — federated GraphQL (default `4013`) and
 //! `GET /files/employee-document?token=...` (M5, HMAC time-limited download).
 
 use std::net::SocketAddr;
@@ -15,6 +15,7 @@ use axum::routing::get;
 use axum::Router;
 use kabipay_common::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
 use kabipay_common::error::KabiPayError;
+use kabipay_common::load_dotenv;
 use kabipay_common::subgraph::{graphql_playground, tenant_graphql_post};
 use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
 use kabipay_db_entities::tenant::d0029_file_storage::file_storage;
@@ -47,7 +48,7 @@ struct EmployeeState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    load_dotenv();
     kabipay_common::telemetry::init_tracing("kabipay-employee");
 
     let port: u16 = std::env::var("KABIPAY_EMPLOYEE_PORT")

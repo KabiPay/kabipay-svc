@@ -1,4 +1,4 @@
-//! Tenant-schema table models (Liquibase domains 0005–0031).
+//! Tenant-schema table models (Liquibase domains 0005–0030).
 //! Generated — do not hand-edit; re-run `scripts/generate_db_entities.py`.
 
 pub mod prelude;
@@ -31,3 +31,5 @@ pub mod d0028_master_data;
 pub mod d0029_file_storage;
 pub mod d0030_outbox_events;
 pub mod d0031_tax_proof;
+pub mod d0032_attendance_punch_policy;
+pub mod d0033_travel_request;

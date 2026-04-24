@@ -12,9 +12,10 @@
 //! Resolvers obtain the caller's tenant id and SeaORM connection via the
 //! [`require_tenant_id`] and [`tenant_db`] helpers in this module.
 
-use crate::context::ClientClaims;
+use crate::context::{ClientClaims, ClientRequestHints};
 use crate::db::{
-    apply_postgres_ssl_mode_to_url, connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig,
+    apply_postgres_ssl_mode_to_url, connect_ops_db, resolve_tenant_db, TenantDbCache,
+    TenantDbConfig,
 };
 use crate::error::{KabiPayError, KabiPayResult};
 use crate::jwt::{decode_client_jwt, extract_bearer, jwt_secret_from_env};
@@ -89,6 +90,30 @@ pub fn require_tenant_id(ctx: &Context<'_>) -> async_graphql::Result<Uuid> {
     ctx.data_opt::<TenantId>()
         .map(|t| t.0)
         .ok_or_else(|| KabiPayError::Unauthorised.into_graphql())
+}
+
+/// Gateway-derived request metadata (client IP, etc.). Missing when a subgraph bypasses
+/// [`tenant_graphql_post`]; treat as empty.
+pub fn client_request_hints(ctx: &Context<'_>) -> ClientRequestHints {
+    ctx.data_opt::<ClientRequestHints>()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn client_ip_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(raw) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = raw.split(',').next() {
+            let s = first.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Read the caller's full JWT claims. Available only when the caller
@@ -196,7 +221,7 @@ where
     M: ObjectType + 'static,
     S: SubscriptionType + 'static,
 {
-    dotenvy::dotenv().ok();
+    crate::env_file::load_dotenv();
     init_tracing(cfg.service_name);
 
     let port: u16 = std::env::var(cfg.port_env)
@@ -255,6 +280,10 @@ where
     S: SubscriptionType + 'static,
 {
     let mut req = req.into_inner();
+    let hints = ClientRequestHints {
+        client_ip: client_ip_from_headers(&headers),
+    };
+    req = req.data(hints);
     if let Some((tenant_id, claims)) = extract_tenant_identity(&headers)? {
         req = req.data(TenantId(tenant_id));
         if let Some(c) = claims {

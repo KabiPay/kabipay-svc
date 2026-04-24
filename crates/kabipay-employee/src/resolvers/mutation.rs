@@ -3,20 +3,24 @@
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
     context::ClientClaims,
-    subgraph::{require_client_claims, require_tenant_id, tenant_db},
+    subgraph::{
+        require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db,
+    },
     KabiPayError,
 };
 use uuid::Uuid;
 
 use crate::resolvers::scope::assert_employee_in_data_scope;
 use crate::resolvers::types::{
-    CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto, UpdateEmployeeInput,
-    UploadEmployeeDocumentInput,
+    CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto, OnboardingChecklistItemDto,
+    UpdateEmployeeInput, UploadEmployeeDocumentInput,
 };
 use crate::services::document_file_service;
 use crate::services::employee_service::{self, EmployeePatch, NewEmployee};
+use crate::services::onboarding_service;
 
 use crate::entities::d0008_document_system::document_type;
+use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -83,6 +87,7 @@ impl MutationRoot {
             date_of_joining: input.date_of_joining,
             department_id: opt_uuid(&input.department_id, "departmentId")?,
             designation_id: opt_uuid(&input.designation_id, "designationId")?,
+            reporting_manager_id: opt_uuid(&input.reporting_manager_id, "reportingManagerId")?,
             employment_type: input.employment_type,
             status: input
                 .status
@@ -105,11 +110,17 @@ impl MutationRoot {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let eid = parse_uuid(&input.id, "id")?;
+        let reporting_manager_id = match input.reporting_manager_id {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(ref id)) => Some(Some(parse_uuid(id, "reportingManagerId")?)),
+        };
         let patch = EmployeePatch {
             first_name: input.first_name,
             last_name: input.last_name,
             department_id: opt_uuid(&input.department_id, "departmentId")?,
             designation_id: opt_uuid(&input.designation_id, "designationId")?,
+            reporting_manager_id,
             employment_type: input.employment_type,
             status: input.status,
             user_id: opt_uuid(&input.user_id, "userId")?,
@@ -174,5 +185,46 @@ impl MutationRoot {
         .await
         .map_err(KabiPayError::into_graphql)?;
         Ok(EmployeeDocumentDto::from(m))
+    }
+
+    /// Mark an onboarding checklist row complete or incomplete. Employees may update **their own**
+    /// tasks; HR / directory roles may update tasks for employees in their data scope.
+    async fn set_onboarding_checklist_item_completed(
+        &self,
+        ctx: &Context<'_>,
+        checklist_item_id: ID,
+        is_completed: bool,
+    ) -> Result<OnboardingChecklistItemDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let task_id = parse_uuid(&checklist_item_id, "checklistItemId")?;
+        let row = onboarding_checklist::Entity::find_by_id(task_id)
+            .filter(onboarding_checklist::Column::TenantId.eq(tenant_id))
+            .one(&db)
+            .await
+            .map_err(|e: sea_orm::DbErr| KabiPayError::from(e).into_graphql())?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "onboardingChecklistItem",
+                    id: task_id.to_string(),
+                }
+                .into_graphql()
+            })?;
+        let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        if claims.can_manage_employee_directory() {
+            assert_employee_in_data_scope(ctx, &db, tenant_id, row.employee_id).await?;
+        } else if row.employee_id != viewer {
+            return Err(KabiPayError::Forbidden(
+                "you can only update your own onboarding tasks".into(),
+            )
+            .into_graphql());
+        }
+        let m = onboarding_service::set_task_completed(&db, tenant_id, task_id, is_completed)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(OnboardingChecklistItemDto::from(m))
     }
 }

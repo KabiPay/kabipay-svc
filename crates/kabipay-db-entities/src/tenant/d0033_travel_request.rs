@@ -1,21 +1,22 @@
-//! Auto-generated from `kabipay-database/changelog/migrations/0031_tax_proof/tax_proof.xml`.
+//! Auto-generated from `kabipay-database/changelog/migrations/0033_travel_request/travel_request.xml`.
 
-pub mod tax_proof_line {
+pub mod travel_request {
     use crate::tenant::prelude::*;
 
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-    #[sea_orm(table_name = "tax_proof_line")]
+    #[sea_orm(table_name = "travel_request")]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
         pub tenant_id: Uuid,
         pub employee_id: Uuid,
-        pub tax_config_version_id: Uuid,
-        pub fiscal_year: i32,
-        pub section_code: String,
-        pub declared_amount: Decimal,
-        pub actual_amount: Decimal,
-        pub file_storage_id: Option<Uuid>,
+        pub origin_location: Option<String>,
+        pub destination_location: Option<String>,
+        pub from_date: NaiveDate,
+        pub to_date: NaiveDate,
+        pub purpose: String,
+        pub estimated_amount: Option<Decimal>,
+        pub currency: String,
         pub status: String,
         pub rejection_reason: Option<String>,
         pub approved_by: Option<Uuid>,

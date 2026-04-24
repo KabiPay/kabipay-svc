@@ -56,6 +56,54 @@ pub struct SubmitExpenseInput {
     pub title: String,
 }
 
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TravelRequest")]
+pub struct TravelRequestDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    pub origin_location: Option<String>,
+    pub destination_location: Option<String>,
+    pub from_date: NaiveDate,
+    pub to_date: NaiveDate,
+    pub purpose: String,
+    pub estimated_amount: Option<String>,
+    pub currency: String,
+    pub status: String,
+    pub submitted_at: DateTime<Utc>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct SubmitTravelRequestInput {
+    pub origin_location: Option<String>,
+    pub destination_location: Option<String>,
+    pub from_date: NaiveDate,
+    pub to_date: NaiveDate,
+    pub purpose: String,
+    /// Optional string decimal; omit for unknown estimate.
+    pub estimated_amount: Option<String>,
+    pub currency: String,
+}
+
+impl From<kabipay_db_entities::tenant::d0033_travel_request::travel_request::Model> for TravelRequestDto {
+    fn from(m: kabipay_db_entities::tenant::d0033_travel_request::travel_request::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            origin_location: m.origin_location,
+            destination_location: m.destination_location,
+            from_date: m.from_date,
+            to_date: m.to_date,
+            purpose: m.purpose,
+            estimated_amount: m.estimated_amount.map(|d| d.to_string()),
+            currency: m.currency,
+            status: m.status,
+            submitted_at: m.submitted_at,
+        }
+    }
+}
+
 impl From<expense::Model> for ExpenseDto {
     fn from(m: expense::Model) -> Self {
         Self {

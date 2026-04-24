@@ -1,6 +1,6 @@
 //! GraphQL DTOs for kabipay-grievance.
 
-use async_graphql::{SimpleObject, ID};
+use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, Utc};
 use kabipay_db_entities::tenant::d0023_grievance::{grievance_case, grievance_category};
 
@@ -36,6 +36,7 @@ pub struct GrievanceCaseDto {
     pub employee_id: ID,
     pub grievance_category_id: ID,
     pub subject: String,
+    pub description: Option<String>,
     pub status: String,
     pub priority: Option<String>,
     pub confidentiality_level: Option<String>,
@@ -51,6 +52,7 @@ impl From<grievance_case::Model> for GrievanceCaseDto {
             employee_id: ID(m.employee_id.to_string()),
             grievance_category_id: ID(m.grievance_category_id.to_string()),
             subject: m.subject,
+            description: m.description,
             status: m.status,
             priority: m.priority,
             confidentiality_level: m.confidentiality_level,
@@ -58,4 +60,11 @@ impl From<grievance_case::Model> for GrievanceCaseDto {
             resolved_at: m.resolved_at,
         }
     }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct SubmitGrievanceCaseInput {
+    pub grievance_category_id: ID,
+    pub subject: String,
+    pub description: Option<String>,
 }

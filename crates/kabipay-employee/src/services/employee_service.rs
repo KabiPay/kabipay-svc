@@ -10,11 +10,48 @@ use kabipay_common::context::ScopeType;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
-    QuerySelect, Set,
+    QueryOrder, QuerySelect, Set,
 };
 use uuid::Uuid;
 
 use crate::entities::d0007_employee_core::employee;
+
+/// `new_manager` must exist, differ from `subject_employee_id`, and must not create a reporting loop.
+pub async fn assert_valid_reporting_manager(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    subject_employee_id: Uuid,
+    new_manager_id: Uuid,
+) -> KabiPayResult<()> {
+    if subject_employee_id == new_manager_id {
+        return Err(KabiPayError::Validation(
+            "an employee cannot report to themselves".into(),
+        ));
+    }
+    find_by_id(db, tenant_id, new_manager_id)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "employee",
+            id: new_manager_id.to_string(),
+        })?;
+
+    let mut current = new_manager_id;
+    for _ in 0..64 {
+        let row = find_by_id(db, tenant_id, current)
+            .await?
+            .ok_or_else(|| KabiPayError::Internal("reporting chain broke".into()))?;
+        let Some(mid) = row.reporting_manager_id else {
+            break;
+        };
+        if mid == subject_employee_id {
+            return Err(KabiPayError::Validation(
+                "that reporting manager would create a loop in the org chart".into(),
+            ));
+        }
+        current = mid;
+    }
+    Ok(())
+}
 
 /// Look up one non-deleted employee inside a tenant schema.
 ///
@@ -96,6 +133,61 @@ pub async fn list(
     q.limit(limit).all(db).await.map_err(KabiPayError::from)
 }
 
+/// Employees visible under the same data scope as [`list`], with a higher row cap for org-chart views.
+/// `limit` is clamped to `1..=500`.
+pub async fn list_for_org_chart(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    limit: u64,
+    scope: ScopeType,
+    viewer: Option<ClientViewerEmployee>,
+) -> KabiPayResult<Vec<employee::Model>> {
+    let limit = limit.clamp(1, 500);
+    let mut q = employee::Entity::find()
+        .filter(employee::Column::TenantId.eq(tenant_id))
+        .filter(employee::Column::IsDeleted.eq(false));
+
+    match scope {
+        ScopeType::All => {}
+        ScopeType::Self_ => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = q.filter(employee::Column::Id.eq(v.employee_id));
+        }
+        ScopeType::Team => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = q.filter(
+                Condition::any()
+                    .add(employee::Column::Id.eq(v.employee_id))
+                    .add(employee::Column::ReportingManagerId.eq(v.employee_id)),
+            );
+        }
+        ScopeType::Department => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = if let Some(d) = v.department_id {
+                q.filter(
+                    Condition::any()
+                        .add(employee::Column::Id.eq(v.employee_id))
+                        .add(employee::Column::DepartmentId.eq(Some(d))),
+                )
+            } else {
+                q.filter(employee::Column::Id.eq(v.employee_id))
+            };
+        }
+    }
+
+    q.order_by_asc(employee::Column::EmployeeCode)
+        .limit(limit)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)
+}
+
 /// Payload for a new `employee` row (no GraphQL types here).
 pub struct NewEmployee {
     pub employee_code: String,
@@ -104,6 +196,7 @@ pub struct NewEmployee {
     pub date_of_joining: NaiveDate,
     pub department_id: Option<Uuid>,
     pub designation_id: Option<Uuid>,
+    pub reporting_manager_id: Option<Uuid>,
     pub employment_type: Option<String>,
     pub status: String,
     pub user_id: Option<Uuid>,
@@ -127,6 +220,9 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4();
+    if let Some(mgr) = data.reporting_manager_id {
+        assert_valid_reporting_manager(db, tenant_id, id, mgr).await?;
+    }
     let now = Utc::now();
     let am = employee::ActiveModel {
         id: Set(id),
@@ -136,7 +232,7 @@ pub async fn create(
         designation_id: Set(data.designation_id),
         cost_center_id: Set(None),
         location_id: Set(None),
-        reporting_manager_id: Set(None),
+        reporting_manager_id: Set(data.reporting_manager_id),
         employee_code: Set(data.employee_code),
         first_name: Set(data.first_name),
         last_name: Set(data.last_name),
@@ -173,6 +269,8 @@ pub struct EmployeePatch {
     pub last_name: Option<String>,
     pub department_id: Option<Uuid>,
     pub designation_id: Option<Uuid>,
+    /// `None` = do not change; `Some(None)` = clear; `Some(Some(u))` = set (validated).
+    pub reporting_manager_id: Option<Option<Uuid>>,
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<Uuid>,
@@ -202,6 +300,17 @@ pub async fn update(
     }
     if let Some(v) = patch.designation_id {
         am.designation_id = Set(Some(v));
+    }
+    if let Some(inner) = patch.reporting_manager_id {
+        match inner {
+            None => {
+                am.reporting_manager_id = Set(None);
+            }
+            Some(mgr) => {
+                assert_valid_reporting_manager(db, tenant_id, employee_id, mgr).await?;
+                am.reporting_manager_id = Set(Some(mgr));
+            }
+        }
     }
     if let Some(v) = patch.employment_type {
         am.employment_type = Set(Some(v));

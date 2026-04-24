@@ -182,6 +182,16 @@ pub const PERM_EXPENSE_APPROVE: &str = "expense:approve";
 pub const PERM_TAX_PROOF_APPROVE: &str = "tax:approve";
 /// Export India payroll statutory artefacts (e.g. monthly TDS summary CSV) for the tenant.
 pub const PERM_PAYROLL_STATUTORY_EXPORT: &str = "payroll:statutory_export";
+/// Configure live punch enforcement (geofence / IP allowlist) for the tenant.
+pub const PERM_ATTENDANCE_PUNCH_POLICY: &str = "attendance:punch_policy";
+
+/// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
+/// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
+#[derive(Clone, Debug, Default)]
+pub struct ClientRequestHints {
+    /// First hop from `X-Forwarded-For`, else `X-Real-IP`, when present.
+    pub client_ip: Option<String>,
+}
 
 impl ClientClaims {
     /// True if the token includes one of the permission strings (exact match on wire).
@@ -238,6 +248,17 @@ impl ClientClaims {
     /// Download tenant-wide **statutory payroll** reports (TDS summary CSV, etc.).
     pub fn can_export_payroll_statutory(&self) -> bool {
         if self.has_any_permission(&[PERM_PAYROLL_STATUTORY_EXPORT]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Configure **live punch** policy (geofence + IP allowlist) for the tenant.
+    pub fn can_configure_attendance_punch_policy(&self) -> bool {
+        if self.has_any_permission(&[PERM_ATTENDANCE_PUNCH_POLICY]) {
             return true;
         }
         self.roles.iter().any(|r| {

@@ -5,6 +5,9 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{
     attendance, holiday, shift, timesheet_entry,
 };
+use kabipay_db_entities::tenant::d0032_attendance_punch_policy::attendance_punch_policy;
+use rust_decimal::prelude::ToPrimitive;
+use uuid::Uuid;
 
 use crate::services::attendance_service::PunchDaySummary;
 
@@ -131,6 +134,61 @@ impl From<timesheet_entry::Model> for TimesheetEntryDto {
             updated_at: m.updated_at,
         }
     }
+}
+
+/// Tenant policy for live punch: optional geofence around a site and/or IP allowlist.
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "AttendancePunchPolicy")]
+pub struct AttendancePunchPolicyDto {
+    /// Set after the first successful `upsertAttendancePunchPolicy`.
+    pub id: Option<ID>,
+    pub tenant_id: ID,
+    pub is_enforced: bool,
+    pub site_latitude: Option<f64>,
+    pub site_longitude: Option<f64>,
+    pub max_distance_meters: Option<i32>,
+    /// Comma-separated IPs or CIDRs (e.g. `203.0.113.10,192.168.0.0/24`).
+    pub ip_allowlist: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl AttendancePunchPolicyDto {
+    pub fn not_configured(tenant_id: Uuid) -> Self {
+        Self {
+            id: None,
+            tenant_id: ID(tenant_id.to_string()),
+            is_enforced: false,
+            site_latitude: None,
+            site_longitude: None,
+            max_distance_meters: None,
+            ip_allowlist: None,
+            updated_at: None,
+        }
+    }
+}
+
+impl From<attendance_punch_policy::Model> for AttendancePunchPolicyDto {
+    fn from(m: attendance_punch_policy::Model) -> Self {
+        Self {
+            id: Some(ID(m.id.to_string())),
+            tenant_id: ID(m.tenant_id.to_string()),
+            is_enforced: m.is_enforced,
+            site_latitude: m.site_latitude.and_then(|d| d.to_f64()),
+            site_longitude: m.site_longitude.and_then(|d| d.to_f64()),
+            max_distance_meters: m.max_distance_meters,
+            ip_allowlist: m.ip_allowlist,
+            updated_at: Some(m.updated_at),
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertAttendancePunchPolicyInput {
+    pub is_enforced: bool,
+    pub site_latitude: Option<f64>,
+    pub site_longitude: Option<f64>,
+    pub max_distance_meters: Option<i32>,
+    pub ip_allowlist: Option<String>,
 }
 
 #[derive(InputObject, Clone, Debug)]

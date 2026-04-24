@@ -5,6 +5,7 @@
 use anyhow::Context;
 use chrono::Utc;
 use kabipay_common::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
+use kabipay_common::load_dotenv;
 use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
 use kabipay_common::telemetry::init_tracing;
 use kabipay_db_entities::ops::tenant_database;
@@ -225,7 +226,7 @@ async fn process_tenant_outbox(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    load_dotenv();
     init_tracing("kabipay-outbox-worker");
 
     let dsn = ops_dsn_from_env();

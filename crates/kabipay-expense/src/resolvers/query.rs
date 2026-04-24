@@ -10,8 +10,8 @@ use kabipay_common::{
     KabiPayError,
 };
 
-use crate::resolvers::types::{ExpenseCategoryDto, ExpenseDto};
-use crate::services::expense_service;
+use crate::resolvers::types::{ExpenseCategoryDto, ExpenseDto, TravelRequestDto};
+use crate::services::{expense_service, travel_request_service};
 
 pub struct QueryRoot;
 
@@ -50,5 +50,24 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(ExpenseDto::from).collect())
+    }
+
+    /// Travel / trip requests for the caller’s **expense** data scope (same as `expenses`).
+    async fn travel_requests(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TravelRequestDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let scope = data_scope_from_context(ctx, SCOPE_RES_EXPENSE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let rows = travel_request_service::list_travel_requests(&db, tenant_id, limit, &filt)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TravelRequestDto::from).collect())
     }
 }

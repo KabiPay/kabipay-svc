@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::resolvers::types::{
     DepartmentDto, DesignationDto, DocumentTypeDto, EmployeeDocumentDto, EmployeeDto,
+    OnboardingChecklistItemDto, OrgChartRowDto,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -17,7 +18,7 @@ use crate::resolvers::scope::{
     assert_employee_in_data_scope, data_scope_employee, resolve_viewer_employee,
 };
 use crate::services::document_file_service::{self, download_claims};
-use crate::services::{document_service, employee_service, org_service};
+use crate::services::{document_service, employee_service, onboarding_service, org_service};
 
 pub struct QueryRoot;
 
@@ -125,6 +126,54 @@ impl QueryRoot {
         Ok(rows.into_iter().map(DesignationDto::from).collect())
     }
 
+    /// Reporting hierarchy as a **flat** list (`reportingManagerId` → parent). Build a tree in the client.
+    /// Respects the same **`employee`** `resource_scopes` as **`employees`** (SELF / TEAM / DEPARTMENT / ALL).
+    async fn org_chart(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 500)] limit: u64,
+    ) -> Result<Vec<OrgChartRowDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let scope = data_scope_employee(ctx);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let models = employee_service::list_for_org_chart(&db, tenant_id, limit, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+
+        let mut dept_ids: Vec<Uuid> = models.iter().filter_map(|e| e.department_id).collect();
+        dept_ids.sort_unstable();
+        dept_ids.dedup();
+        let mut desig_ids: Vec<Uuid> = models.iter().filter_map(|e| e.designation_id).collect();
+        desig_ids.sort_unstable();
+        desig_ids.dedup();
+
+        let dept_map = org_service::map_department_names(&db, tenant_id, &dept_ids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let desig_map = org_service::map_designation_titles(&db, tenant_id, &desig_ids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+
+        let rows = models
+            .into_iter()
+            .map(|m| {
+                let full_name = format!("{} {}", m.first_name.trim(), m.last_name.trim())
+                    .trim()
+                    .to_string();
+                OrgChartRowDto {
+                    employee_id: ID(m.id.to_string()),
+                    employee_code: m.employee_code,
+                    full_name,
+                    reporting_manager_id: m.reporting_manager_id.map(|u| ID(u.to_string())),
+                    department_name: m.department_id.and_then(|id| dept_map.get(&id).cloned()),
+                    designation_title: m.designation_id.and_then(|id| desig_map.get(&id).cloned()),
+                }
+            })
+            .collect();
+        Ok(rows)
+    }
+
     /// HMAC time-limited URL for `GET /files/employee-document?token=...` (no `Authorization` on GET).
     /// Caller must be able to read the employee who owns the document.
     async fn employee_document_signed_read_url(
@@ -156,6 +205,31 @@ impl QueryRoot {
         let ttl = ttl_seconds.clamp(60, 86_400) as i64;
         let claims = download_claims(tenant_id, file_id, None, ttl);
         Ok(document_file_service::public_download_url(&claims))
+    }
+
+    /// Onboarding tasks for an employee. Omit `employeeId` for the JWT subject’s checklist.
+    /// HR / directory managers may pass another employee id (same data-scope rules as documents).
+    async fn onboarding_checklist(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: Option<ID>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<OnboardingChecklistItemDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let emp = if let Some(id) = &employee_id {
+            let eid = parse_uuid(id, "employee id")?;
+            assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+            eid
+        } else {
+            resolve_client_employee_id(ctx, &db, tenant_id)
+                .await
+                .map_err(KabiPayError::into_graphql)?
+        };
+        let rows = onboarding_service::list_checklist_for_employee(&db, tenant_id, emp, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(OnboardingChecklistItemDto::from).collect())
     }
 }
 
