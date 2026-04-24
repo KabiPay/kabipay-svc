@@ -3,6 +3,7 @@
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
+use crate::entities::d0006_org_hierarchy::{department, designation};
 use crate::entities::d0007_employee_core::employee;
 use crate::entities::d0008_document_system::{document_type, employee_document};
 
@@ -85,6 +86,52 @@ impl From<employee_document::Model> for EmployeeDocumentDto {
     }
 }
 
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "Department")]
+pub struct DepartmentDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub name: String,
+    pub code: String,
+    pub parent_department_id: Option<ID>,
+}
+
+impl From<department::Model> for DepartmentDto {
+    fn from(m: department::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            name: m.name,
+            code: m.code,
+            parent_department_id: m.parent_department_id.map(|u| ID(u.to_string())),
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "Designation")]
+pub struct DesignationDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub department_id: ID,
+    pub title: String,
+    pub level: Option<String>,
+    pub grade: Option<i32>,
+}
+
+impl From<designation::Model> for DesignationDto {
+    fn from(m: designation::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            department_id: ID(m.department_id.to_string()),
+            title: m.title,
+            level: m.level,
+            grade: m.grade,
+        }
+    }
+}
+
 #[derive(InputObject, Clone, Debug)]
 pub struct CreateEmployeeInput {
     pub employee_code: String,
@@ -109,6 +156,16 @@ pub struct UpdateEmployeeInput {
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<ID>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UploadEmployeeDocumentInput {
+    pub employee_id: ID,
+    pub document_type_id: ID,
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    /// Standard base64 (not data-URL). Max ~6MB decoded.
+    pub content_base64: String,
 }
 
 impl From<employee::Model> for EmployeeDto {

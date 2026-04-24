@@ -26,7 +26,7 @@ Optional:
 
    Edit `.env`:
 
-   - Set **`DATABASE_URL`** *or* **`POSTGRES_HOST`**, **`POSTGRES_PORT`**, **`POSTGRES_DB`**, **`POSTGRES_USER`**, **`POSTGRES_PASSWORD`** so they match your database (same host port you publish from Docker or your provider).
+   - Set **`DATABASE_URL`** *or* **`POSTGRES_HOST`**, **`POSTGRES_PORT`**, **`POSTGRES_DB`**, **`POSTGRES_USER`**, **`POSTGRES_PASSWORD`** (and **`POSTGRES_SSLMODE`** for managed providers) so they match your database.
    - Set **`KABIPAY_CLIENT_JWT_SECRET`** and **`KABIPAY_OPERATOR_JWT_SECRET`** to long random strings (32+ characters).
 
 ## Build
@@ -75,7 +75,7 @@ The script starts **debug** binaries under `target\debug\kabipay-*.exe` on ports
 
 | Script | Purpose |
 |--------|---------|
-| `scripts\provision-tenant.ps1` | Ops rows + tenant schema + Liquibase tenant migrations (requires Docker Postgres from **kabipay-database** and paths to that repo). |
+| `scripts\provision-tenant.ps1` | Ops rows + tenant schema + Liquibase tenant migrations (Node + `kabipay-database` `npm install`). |
 | `scripts\update-tenant-liquibase.ps1` | Re-run tenant migrations for an existing schema. |
 | `scripts\seed-demo-data.ps1` | Demo seed data (requires DB + tenant already provisioned). |
 
@@ -93,6 +93,6 @@ Exact mapping is in `.env.example` and `scripts\start-subgraphs.ps1`.
 
 ## Related repositories
 
-- **kabipay-database** — schema migrations and local Docker Postgres.
+- **kabipay-database** — Liquibase schema migrations.
 - **kabipay-gateway** — federated GraphQL gateway; point it at the same subgraph base URL and ports.
 - **kabipay-ui** — browser client; `public/config.json` must match auth URL and gateway URL.

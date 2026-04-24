@@ -1,9 +1,16 @@
 //! Tenant-scoped SeaORM queries and commands for shifts, holidays, and attendance.
 
-use chrono::{NaiveDate, Utc};
+use chrono::{NaiveDate, NaiveTime, Utc};
+use kabipay_common::client_data_scope::EmployeeScopeFilter;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use rust_decimal::Decimal;
 use std::str::FromStr;
+
+/// WGS84 coordinates for a punch; both axes must be set when used.
+pub struct PunchGeo {
+    pub lat: Decimal,
+    pub lng: Decimal,
+}
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{
     attendance, holiday, holiday_calendar, shift, timesheet_entry,
 };
@@ -33,11 +40,19 @@ pub async fn list_attendance(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     limit: u64,
+    scope_filter: &EmployeeScopeFilter,
 ) -> KabiPayResult<Vec<attendance::Model>> {
     let limit = limit.clamp(1, 500);
-    attendance::Entity::find()
-        .filter(attendance::Column::TenantId.eq(tenant_id))
-        .order_by_desc(attendance::Column::WorkDate)
+    match scope_filter {
+        EmployeeScopeFilter::Empty => return Ok(vec![]),
+        EmployeeScopeFilter::EmployeeIds(ids) if ids.is_empty() => return Ok(vec![]),
+        _ => {}
+    }
+    let mut q = attendance::Entity::find().filter(attendance::Column::TenantId.eq(tenant_id));
+    if let EmployeeScopeFilter::EmployeeIds(ids) = scope_filter {
+        q = q.filter(attendance::Column::EmployeeId.is_in(ids.clone()));
+    }
+    q.order_by_desc(attendance::Column::WorkDate)
         .limit(limit)
         .all(db)
         .await
@@ -71,12 +86,7 @@ pub async fn list_upcoming_holidays(
         .await?;
     let out: Vec<(holiday::Model, String)> = rows
         .into_iter()
-        .filter_map(|h| {
-            names
-                .get(&h.calendar_id)
-                .cloned()
-                .map(|n| (h, n))
-        })
+        .filter_map(|h| names.get(&h.calendar_id).cloned().map(|n| (h, n)))
         .collect();
     Ok(out)
 }
@@ -148,15 +158,20 @@ pub async fn punch_day_summary(
 /// **Multi-segment punch:** each pair (punch in → punch out) is a separate `attendance` row
 /// for the same `work_date`. The next call after a completed segment starts a new segment
 /// (new check-in row). `total` worked time for the day is the sum of all completed segments.
+///
+/// `geo` applies to **this** event: on punch-in (new row) it fills `check_in_*`;
+/// on punch-out (update open row) it fills `check_out_*`. Columns in Liquibase: `attendance`
+/// already has `check_in_lat` / `check_in_lng` / `check_out_lat` / `check_out_lng`.
 pub async fn punch_today(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     employee_id: Uuid,
+    geo: Option<PunchGeo>,
 ) -> KabiPayResult<attendance::Model> {
     let now_ts = Utc::now();
     let today = now_ts.date_naive();
     let now_t = now_ts.naive_utc().time();
-
+    let source = if geo.is_some() { "WEB+GPS" } else { "WEB" };
     let open = attendance::Entity::find()
         .filter(attendance::Column::TenantId.eq(tenant_id))
         .filter(attendance::Column::EmployeeId.eq(employee_id))
@@ -172,6 +187,11 @@ pub async fn punch_today(
         let mut am: attendance::ActiveModel = row.into();
         am.check_out_time = Set(Some(now_t));
         am.status = Set(Some("COMPLETE".into()));
+        if let Some(g) = geo {
+            am.check_out_lat = Set(Some(g.lat));
+            am.check_out_lng = Set(Some(g.lng));
+        }
+        am.source = Set(Some(source.into()));
         am.updated_at = Set(now_ts);
         am.update(db).await?;
         return attendance::Entity::find_by_id(id)
@@ -181,6 +201,10 @@ pub async fn punch_today(
     }
 
     let id = Uuid::new_v4();
+    let (in_lat, in_lng) = match &geo {
+        Some(g) => (Some(g.lat), Some(g.lng)),
+        None => (None, None),
+    };
     let am = attendance::ActiveModel {
         id: Set(id),
         tenant_id: Set(tenant_id),
@@ -189,11 +213,11 @@ pub async fn punch_today(
         work_date: Set(today),
         check_in_time: Set(Some(now_t)),
         check_out_time: Set(None),
-        check_in_lat: Set(None),
-        check_in_lng: Set(None),
+        check_in_lat: Set(in_lat),
+        check_in_lng: Set(in_lng),
         check_out_lat: Set(None),
         check_out_lng: Set(None),
-        source: Set(Some("WEB".into())),
+        source: Set(Some(source.into())),
         status: Set(Some("OPEN".into())),
         regularization_status: Set(None),
         biometric_ref: Set(None),
@@ -208,6 +232,60 @@ pub async fn punch_today(
         .one(db)
         .await?
         .ok_or_else(|| KabiPayError::Internal("attendance row missing after insert".into()))
+}
+
+/// One completed in→out **segment** for a chosen `work_date` when the user missed live punches
+/// (e.g. forgot to open the app). **Same calendar day** only — night shifts that span midnight
+/// are not represented as a single row here. Stored with `source` `WEB+MANUAL` and
+/// `regularization_status` `SELF_REPORTED` for audit.
+pub async fn add_manual_attendance_segment(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    work_date: NaiveDate,
+    check_in_time: NaiveTime,
+    check_out_time: NaiveTime,
+) -> KabiPayResult<attendance::Model> {
+    let today = Utc::now().date_naive();
+    if work_date > today {
+        return Err(KabiPayError::Validation(
+            "workDate cannot be in the future".into(),
+        ));
+    }
+    if check_in_time >= check_out_time {
+        return Err(KabiPayError::Validation(
+            "checkInTime must be before checkOutTime (same-day segment only)".into(),
+        ));
+    }
+    let now_ts = Utc::now();
+    let id = Uuid::new_v4();
+    let am = attendance::ActiveModel {
+        id: Set(id),
+        tenant_id: Set(tenant_id),
+        employee_id: Set(employee_id),
+        shift_id: Set(None),
+        work_date: Set(work_date),
+        check_in_time: Set(Some(check_in_time)),
+        check_out_time: Set(Some(check_out_time)),
+        check_in_lat: Set(None),
+        check_in_lng: Set(None),
+        check_out_lat: Set(None),
+        check_out_lng: Set(None),
+        source: Set(Some("WEB+MANUAL".into())),
+        status: Set(Some("COMPLETE".into())),
+        regularization_status: Set(Some("SELF_REPORTED".into())),
+        biometric_ref: Set(None),
+        overtime_hours: Set(None),
+        late_minutes: Set(None),
+        early_exit_minutes: Set(None),
+        created_at: Set(now_ts),
+        updated_at: Set(now_ts),
+    };
+    am.insert(db).await?;
+    attendance::Entity::find_by_id(id)
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::Internal("inserted attendance row not found".into()))
 }
 
 pub async fn list_timesheet_entries(
@@ -298,7 +376,39 @@ pub async fn delete_timesheet_entry(
 }
 
 pub fn parse_hours(s: &str) -> KabiPayResult<Decimal> {
-    Decimal::from_str(s.trim()).map_err(|_| {
-        KabiPayError::Validation("invalid hoursWorked; use a decimal string".into())
-    })
+    Decimal::from_str(s.trim())
+        .map_err(|_| KabiPayError::Validation("invalid hoursWorked; use a decimal string".into()))
+}
+
+/// Validates optional WGS84 pair; `latitude` and `longitude` must both be set or both omitted.
+pub fn parse_punch_geo(
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+) -> KabiPayResult<Option<PunchGeo>> {
+    match (latitude, longitude) {
+        (None, None) => Ok(None),
+        (Some(lat), Some(lon)) => {
+            if !(-90.0..=90.0).contains(&lat) {
+                return Err(KabiPayError::Validation(
+                    "latitude must be between -90 and 90".into(),
+                ));
+            }
+            if !(-180.0..=180.0).contains(&lon) {
+                return Err(KabiPayError::Validation(
+                    "longitude must be between -180 and 180".into(),
+                ));
+            }
+            let lat_d = Decimal::from_str(&format!("{lat:.7}"))
+                .map_err(|_| KabiPayError::Validation("invalid latitude encoding".into()))?;
+            let lng_d = Decimal::from_str(&format!("{lon:.7}"))
+                .map_err(|_| KabiPayError::Validation("invalid longitude encoding".into()))?;
+            Ok(Some(PunchGeo {
+                lat: lat_d,
+                lng: lng_d,
+            }))
+        }
+        _ => Err(KabiPayError::Validation(
+            "pass both latitude and longitude, or neither".into(),
+        )),
+    }
 }

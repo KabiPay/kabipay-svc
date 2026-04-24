@@ -2,7 +2,9 @@
 
 use async_graphql::{SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
-use kabipay_db_entities::tenant::d0012_payroll::{payroll_cycle, payslip, payslip_component, salary_component};
+use kabipay_db_entities::tenant::d0012_payroll::{
+    payroll_cycle, payslip, payslip_component, salary_component,
+};
 
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "SalaryComponent")]
@@ -104,7 +106,10 @@ pub struct PayslipDetailDto {
 
 impl PayslipDetailDto {
     pub fn from_head(m: payslip::Model, lines: Vec<payslip_component::Model>) -> Self {
-        let lines = lines.into_iter().map(PayslipComponentLineDto::from).collect();
+        let lines = lines
+            .into_iter()
+            .map(PayslipComponentLineDto::from)
+            .collect();
         Self {
             id: ID(m.id.to_string()),
             tenant_id: ID(m.tenant_id.to_string()),

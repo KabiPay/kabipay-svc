@@ -1,9 +1,13 @@
 //! Tenant-scoped SeaORM queries for payroll catalog and cycles.
 
 use kabipay_common::{KabiPayError, KabiPayResult};
-use kabipay_db_entities::tenant::d0012_payroll::{payroll_cycle, payslip, payslip_component, salary_component};
+use kabipay_db_entities::tenant::d0007_employee_core::{employee, employee_pan};
+use kabipay_db_entities::tenant::d0012_payroll::{
+    payroll_cycle, payslip, payslip_component, salary_component,
+};
+use rust_decimal::Decimal;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub async fn list_components(
@@ -13,8 +17,8 @@ pub async fn list_components(
     limit: u64,
 ) -> KabiPayResult<Vec<salary_component::Model>> {
     let limit = limit.clamp(1, 200);
-    let mut q = salary_component::Entity::find()
-        .filter(salary_component::Column::TenantId.eq(tenant_id));
+    let mut q =
+        salary_component::Entity::find().filter(salary_component::Column::TenantId.eq(tenant_id));
     if active_only {
         q = q.filter(salary_component::Column::IsActive.eq(true));
     }
@@ -102,4 +106,118 @@ pub async fn payslip_lines_by_payslip_ids(
         map.entry(c.payslip_id).or_default().push(c);
     }
     Ok(map)
+}
+
+fn csv_cell(raw: &str) -> String {
+    if raw.contains(',') || raw.contains('"') || raw.contains('\n') || raw.contains('\r') {
+        format!("\"{}\"", raw.replace('"', "\"\""))
+    } else {
+        raw.to_string()
+    }
+}
+
+fn dec_cell(d: Decimal) -> String {
+    csv_cell(&d.normalize().to_string())
+}
+
+/// India payroll stub: one CSV listing all payslips in a payroll cycle (month + year) with TDS and PAN.
+/// Header is always present; body is empty when no matching cycle or no payslips.
+pub async fn india_tds_monthly_summary_csv(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    month: i32,
+    year: i32,
+) -> KabiPayResult<String> {
+    if !(1..=12).contains(&month) || !(1900..=2200).contains(&year) {
+        return Err(KabiPayError::Validation(
+            "month must be 1–12 and year a plausible calendar year".into(),
+        ));
+    }
+
+    let cycle = payroll_cycle::Entity::find()
+        .filter(payroll_cycle::Column::TenantId.eq(tenant_id))
+        .filter(payroll_cycle::Column::Month.eq(month))
+        .filter(payroll_cycle::Column::Year.eq(year))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    let mut out = String::from(
+        "employee_code,employee_name,pan,period_month,period_year,payroll_cycle_name,gross_salary,total_deductions,tds_amount,net_salary,payslip_status,payslip_id\n",
+    );
+
+    let Some(cycle_row) = cycle else {
+        return Ok(out);
+    };
+
+    let slips = payslip::Entity::find()
+        .filter(payslip::Column::TenantId.eq(tenant_id))
+        .filter(payslip::Column::PayrollCycleId.eq(cycle_row.id))
+        .order_by_asc(payslip::Column::EmployeeId)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    if slips.is_empty() {
+        return Ok(out);
+    }
+
+    let emp_ids: Vec<Uuid> = slips.iter().map(|p| p.employee_id).collect();
+    let employees = employee::Entity::find()
+        .filter(employee::Column::TenantId.eq(tenant_id))
+        .filter(employee::Column::IsDeleted.eq(false))
+        .filter(employee::Column::Id.is_in(emp_ids.clone()))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let emp_map: HashMap<Uuid, employee::Model> =
+        employees.into_iter().map(|e| (e.id, e)).collect();
+
+    let pans = employee_pan::Entity::find()
+        .filter(employee_pan::Column::TenantId.eq(tenant_id))
+        .filter(employee_pan::Column::EmployeeId.is_in(emp_ids))
+        .filter(employee_pan::Column::IsPrimary.eq(true))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let mut pan_by_emp: HashMap<Uuid, String> = HashMap::new();
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    for p in pans {
+        if seen.insert(p.employee_id) {
+            pan_by_emp.insert(p.employee_id, p.pan_number);
+        }
+    }
+
+    let cycle_name = &cycle_row.name;
+    for p in slips {
+        let (code, name) = match emp_map.get(&p.employee_id) {
+            Some(e) => (
+                e.employee_code.as_str(),
+                format!("{} {}", e.first_name, e.last_name),
+            ),
+            None => ("", String::new()),
+        };
+        let pan = pan_by_emp
+            .get(&p.employee_id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let tds = p.tds_amount.unwrap_or(Decimal::ZERO);
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_cell(code),
+            csv_cell(&name),
+            csv_cell(pan),
+            month,
+            year,
+            csv_cell(cycle_name),
+            dec_cell(p.gross_salary),
+            dec_cell(p.total_deductions),
+            dec_cell(tds),
+            dec_cell(p.net_salary),
+            csv_cell(&p.status),
+            csv_cell(&p.id.to_string()),
+        ));
+    }
+
+    Ok(out)
 }

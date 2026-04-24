@@ -13,11 +13,12 @@
 //! [`require_tenant_id`] and [`tenant_db`] helpers in this module.
 
 use crate::context::ClientClaims;
-use crate::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
+use crate::db::{
+    apply_postgres_ssl_mode_to_url, connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig,
+};
 use crate::error::{KabiPayError, KabiPayResult};
 use crate::jwt::{decode_client_jwt, extract_bearer, jwt_secret_from_env};
 use crate::telemetry::init_tracing;
-use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use async_graphql::{Context, ObjectType, Schema, SubscriptionType};
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::{
@@ -27,6 +28,7 @@ use axum::{
     routing::get,
     Router,
 };
+use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -49,15 +51,17 @@ pub struct TenantId(pub Uuid);
 /// Honours `DATABASE_URL` when set; otherwise falls back to the individual
 /// `POSTGRES_*` vars with safe defaults aligned with `docker-compose.yml`.
 pub fn ops_dsn_from_env() -> String {
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        return url;
-    }
-    let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".into());
-    let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "15432".into());
-    let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "kabipay_dev".into());
-    let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "kabipay".into());
-    let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_else(|_| "changeme".into());
-    format!("postgres://{user}:{pass}@{host}:{port}/{db}")
+    let base = if let Ok(url) = std::env::var("DATABASE_URL") {
+        url
+    } else {
+        let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".into());
+        let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "15432".into());
+        let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "kabipay_dev".into());
+        let user = std::env::var("POSTGRES_USER").unwrap_or_else(|_| "kabipay".into());
+        let pass = std::env::var("POSTGRES_PASSWORD").unwrap_or_else(|_| "changeme".into());
+        format!("postgres://{user}:{pass}@{host}:{port}/{db}")
+    };
+    apply_postgres_ssl_mode_to_url(&base)
 }
 
 /// Build a [`TenantDbConfig`] used as fallback when
@@ -203,7 +207,10 @@ where
     let schema = if cfg.needs_db {
         let dsn = ops_dsn_from_env();
         let ops_db = connect_ops_db(&dsn).await.map_err(|e| {
-            anyhow::anyhow!("{}: failed to connect to ops DB at {dsn}: {e}", cfg.service_name)
+            anyhow::anyhow!(
+                "{}: failed to connect to ops DB at {dsn}: {e}",
+                cfg.service_name
+            )
         })?;
         schema_builder
             .enable_federation()
@@ -219,7 +226,10 @@ where
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/graphql", get(graphql_playground).post(graphql_handler::<Q, M, S>))
+        .route(
+            "/graphql",
+            get(graphql_playground).post(tenant_graphql_post::<Q, M, S>),
+        )
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
@@ -232,7 +242,9 @@ where
     Ok(())
 }
 
-async fn graphql_handler<Q, M, S>(
+/// `POST /graphql` handler for a tenant subgraph. Exposed so binaries can mount
+/// extra HTTP routes (e.g. file download) on the same listener.
+pub async fn tenant_graphql_post<Q, M, S>(
     State(schema): State<Arc<Schema<Q, M, S>>>,
     headers: HeaderMap,
     req: GraphQLRequest,
@@ -252,7 +264,8 @@ where
     Ok(schema.execute(req).await.into())
 }
 
-async fn graphql_playground() -> impl IntoResponse {
+/// Playground HTML for `GET /graphql` on a tenant subgraph.
+pub async fn graphql_playground() -> impl IntoResponse {
     axum::response::Html(async_graphql::http::playground_source(
         async_graphql::http::GraphQLPlaygroundConfig::new("/graphql"),
     ))

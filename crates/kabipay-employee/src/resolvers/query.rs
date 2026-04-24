@@ -2,13 +2,22 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::require_tenant_id, subgraph::resolve_client_employee_id, subgraph::tenant_db,
     KabiPayError,
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{DocumentTypeDto, EmployeeDocumentDto, EmployeeDto};
-use crate::services::{document_service, employee_service};
+use crate::resolvers::types::{
+    DepartmentDto, DesignationDto, DocumentTypeDto, EmployeeDocumentDto, EmployeeDto,
+};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+use crate::entities::d0008_document_system::employee_document;
+use crate::resolvers::scope::{
+    assert_employee_in_data_scope, data_scope_employee, resolve_viewer_employee,
+};
+use crate::services::document_file_service::{self, download_claims};
+use crate::services::{document_service, employee_service, org_service};
 
 pub struct QueryRoot;
 
@@ -24,13 +33,14 @@ impl QueryRoot {
     /// Returns `null` if the employee does not exist, is soft-deleted, or
     /// belongs to another tenant (never leaks cross-tenant rows).
     async fn employee(&self, ctx: &Context<'_>, id: ID) -> Result<Option<EmployeeDto>> {
-        let tenant_id = require_tenant_id(ctx)?;
-        let employee_id = parse_uuid(&id, "employee id")?;
-        let db = tenant_db(ctx, tenant_id).await?;
-        let model = employee_service::find_by_id(&db, tenant_id, employee_id)
-            .await
-            .map_err(KabiPayError::into_graphql)?;
-        Ok(model.map(EmployeeDto::from))
+        resolve_employee_dto(ctx, id).await
+    }
+
+    /// Apollo Federation **entity** lookup (`_entities`) — not exposed as a public `Query` field.
+    /// Enables `type Employee @key(fields: "id")` in the subgraph SDL (**M9**).
+    #[graphql(entity)]
+    async fn find_employee_by_id(&self, ctx: &Context<'_>, id: ID) -> Result<Option<EmployeeDto>> {
+        resolve_employee_dto(ctx, id).await
     }
 
     /// List the first `limit` employees in the caller's tenant (capped at 100).
@@ -41,7 +51,9 @@ impl QueryRoot {
     ) -> Result<Vec<EmployeeDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
-        let models = employee_service::list(&db, tenant_id, limit)
+        let scope = data_scope_employee(ctx);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let models = employee_service::list(&db, tenant_id, limit, scope, viewer)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(models.into_iter().map(EmployeeDto::from).collect())
@@ -71,7 +83,9 @@ impl QueryRoot {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let emp = if let Some(id) = &employee_id {
-            parse_uuid(id, "employee id")?
+            let eid = parse_uuid(id, "employee id")?;
+            assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+            eid
         } else {
             resolve_client_employee_id(ctx, &db, tenant_id)
                 .await
@@ -80,11 +94,90 @@ impl QueryRoot {
         let rows = document_service::list_employee_documents(&db, tenant_id, emp, limit)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        Ok(rows
-            .into_iter()
-            .map(EmployeeDocumentDto::from)
-            .collect())
+        Ok(rows.into_iter().map(EmployeeDocumentDto::from).collect())
     }
+
+    /// Departments in the tenant (org hierarchy). Excludes soft-deleted rows.
+    async fn departments(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<DepartmentDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = org_service::list_departments(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(DepartmentDto::from).collect())
+    }
+
+    /// Job titles / designations in the tenant. Excludes soft-deleted rows.
+    async fn designations(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<DesignationDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = org_service::list_designations(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(DesignationDto::from).collect())
+    }
+
+    /// HMAC time-limited URL for `GET /files/employee-document?token=...` (no `Authorization` on GET).
+    /// Caller must be able to read the employee who owns the document.
+    async fn employee_document_signed_read_url(
+        &self,
+        ctx: &Context<'_>,
+        employee_document_id: ID,
+        #[graphql(default = 600)] ttl_seconds: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let doc_id = parse_uuid(&employee_document_id, "employeeDocumentId")?;
+        let model = employee_document::Entity::find_by_id(doc_id)
+            .filter(employee_document::Column::TenantId.eq(tenant_id))
+            .filter(employee_document::Column::IsDeleted.eq(false))
+            .one(&db)
+            .await
+            .map_err(|e: sea_orm::DbErr| KabiPayError::from(e).into_graphql())?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "employeeDocument",
+                    id: doc_id.to_string(),
+                }
+                .into_graphql()
+            })?;
+        let file_id = model.file_storage_id.ok_or_else(|| {
+            KabiPayError::Validation("document has no file yet".to_string()).into_graphql()
+        })?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, model.employee_id).await?;
+        let ttl = ttl_seconds.clamp(60, 86_400) as i64;
+        let claims = download_claims(tenant_id, file_id, None, ttl);
+        Ok(document_file_service::public_download_url(&claims))
+    }
+}
+
+async fn resolve_employee_dto(ctx: &Context<'_>, id: ID) -> Result<Option<EmployeeDto>> {
+    let tenant_id = require_tenant_id(ctx)?;
+    let employee_id = parse_uuid(&id, "employee id")?;
+    let db = tenant_db(ctx, tenant_id).await?;
+    let model = employee_service::find_by_id(&db, tenant_id, employee_id)
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+    let model = if let Some(ref m) = model {
+        let scope = data_scope_employee(ctx);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        if employee_service::is_employee_in_scope(scope, viewer, m) {
+            model
+        } else {
+            None
+        }
+    } else {
+        model
+    };
+    Ok(model.map(EmployeeDto::from))
 }
 
 fn parse_uuid(raw: &ID, field: &'static str) -> Result<Uuid> {

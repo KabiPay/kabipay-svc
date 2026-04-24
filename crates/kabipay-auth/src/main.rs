@@ -31,6 +31,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 mod handlers;
 mod jwt;
 mod password;
+mod rbac;
 mod state;
 mod tokens;
 

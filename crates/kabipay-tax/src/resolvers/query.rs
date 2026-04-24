@@ -2,12 +2,14 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{TaxComputationDto, TaxConfigurationVersionDto, TaxSlabDto};
+use crate::resolvers::types::{
+    TaxComputationDto, TaxConfigurationVersionDto, TaxProofLineDto, TaxSlabDto,
+};
 use crate::services::tax_service;
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
@@ -76,5 +78,47 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(TaxComputationDto::from).collect())
+    }
+
+    /// Deduction proof lines (declared vs actual) for an employee. Omit `employeeId` for self;
+    /// viewing another employee requires `tax:approve` (or HR / tenant admin role).
+    async fn tax_proof_lines(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: Option<ID>,
+        tax_config_version_id: Option<ID>,
+        fiscal_year: Option<i32>,
+    ) -> Result<Vec<TaxProofLineDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let self_id = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let target = if let Some(id) = &employee_id {
+            parse_uuid(id, "employeeId")?
+        } else {
+            self_id
+        };
+        if target != self_id {
+            let claims = require_client_claims(ctx)?;
+            if !claims.can_approve_tax_proof() {
+                return Err(
+                    KabiPayError::Forbidden(
+                        "cannot read another employee's tax proofs without tax:approve (or HR / admin role)"
+                            .into(),
+                    )
+                    .into_graphql(),
+                );
+            }
+        }
+        let emp = target;
+        let cfg = tax_config_version_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "taxConfigVersionId"))
+            .transpose()?;
+        let rows = tax_service::list_tax_proof_lines(&db, tenant_id, emp, cfg, fiscal_year)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TaxProofLineDto::from).collect())
     }
 }

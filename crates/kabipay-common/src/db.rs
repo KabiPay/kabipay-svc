@@ -72,10 +72,28 @@ pub struct TenantDbConfig {
 
 impl TenantDbConfig {
     fn url_for(&self, host: &str, db_name: &str) -> String {
-        format!(
+        let base = format!(
             "postgres://{}:{}@{}:{}/{}",
             self.db_user, self.db_password, host, self.db_port, db_name
-        )
+        );
+        apply_postgres_ssl_mode_to_url(&base)
+    }
+}
+
+/// If `POSTGRES_SSLMODE` is set (e.g. `require` for Aiven / Neon), append `sslmode` to the
+/// URL when it is not already present. Managed Postgres typically requires TLS.
+pub fn apply_postgres_ssl_mode_to_url(url: &str) -> String {
+    let mode = match std::env::var("POSTGRES_SSLMODE") {
+        Ok(m) if !m.is_empty() => m,
+        _ => return url.to_string(),
+    };
+    if url.contains("sslmode=") {
+        return url.to_string();
+    }
+    if url.contains('?') {
+        format!("{url}&sslmode={mode}")
+    } else {
+        format!("{url}?sslmode={mode}")
     }
 }
 
@@ -234,5 +252,23 @@ mod tests {
         assert!(is_docker_internal_host("kabipay_postgres"));
         assert!(!is_docker_internal_host("localhost"));
         assert!(!is_docker_internal_host("db.prod.internal"));
+    }
+
+    #[test]
+    fn apply_ssl_appends_mode_when_set() {
+        std::env::set_var("POSTGRES_SSLMODE", "require");
+        assert_eq!(
+            apply_postgres_ssl_mode_to_url("postgres://u:p@h:1/db"),
+            "postgres://u:p@h:1/db?sslmode=require"
+        );
+        std::env::remove_var("POSTGRES_SSLMODE");
+    }
+
+    #[test]
+    fn apply_ssl_skips_if_already_in_url() {
+        std::env::set_var("POSTGRES_SSLMODE", "require");
+        let u = "postgres://u:p@h:1/db?sslmode=verify-full";
+        assert_eq!(apply_postgres_ssl_mode_to_url(u), u);
+        std::env::remove_var("POSTGRES_SSLMODE");
     }
 }

@@ -4,9 +4,13 @@
 //! schema isolation) and the `is_deleted = false` filter (Gap B — soft-delete policy).
 
 use chrono::{NaiveDate, Utc};
+use kabipay_common::client_data_scope::employee_model_in_scope;
+use kabipay_common::context::ClientViewerEmployee;
+use kabipay_common::context::ScopeType;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
+    QuerySelect, Set,
 };
 use uuid::Uuid;
 
@@ -29,22 +33,67 @@ pub async fn find_by_id(
         .map_err(KabiPayError::from)
 }
 
-/// List the first `limit` non-deleted employees in the tenant, ordered by creation time.
+/// Whether a fetched employee row is visible under `scope` (used for `employee(id:)` / IDOR checks).
+pub fn is_employee_in_scope(
+    scope: ScopeType,
+    viewer: Option<ClientViewerEmployee>,
+    target: &employee::Model,
+) -> bool {
+    employee_model_in_scope(scope, viewer, target)
+}
+
+/// List the first `limit` non-deleted employees, filtered by the caller’s data scope
+/// (`ALL` = entire tenant, otherwise `scope` + `viewer`).
 ///
 /// `limit` is clamped to the range `1..=100` so a caller cannot force a full-table scan.
+/// When the scope is not `All` and `viewer` is missing (no linked employee), returns an empty list.
 pub async fn list(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     limit: u64,
+    scope: ScopeType,
+    viewer: Option<ClientViewerEmployee>,
 ) -> KabiPayResult<Vec<employee::Model>> {
     let limit = limit.clamp(1, 100);
-    employee::Entity::find()
+    let mut q = employee::Entity::find()
         .filter(employee::Column::TenantId.eq(tenant_id))
-        .filter(employee::Column::IsDeleted.eq(false))
-        .limit(limit)
-        .all(db)
-        .await
-        .map_err(KabiPayError::from)
+        .filter(employee::Column::IsDeleted.eq(false));
+
+    match scope {
+        ScopeType::All => {}
+        ScopeType::Self_ => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = q.filter(employee::Column::Id.eq(v.employee_id));
+        }
+        ScopeType::Team => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = q.filter(
+                Condition::any()
+                    .add(employee::Column::Id.eq(v.employee_id))
+                    .add(employee::Column::ReportingManagerId.eq(v.employee_id)),
+            );
+        }
+        ScopeType::Department => {
+            let Some(v) = viewer else {
+                return Ok(vec![]);
+            };
+            q = if let Some(d) = v.department_id {
+                q.filter(
+                    Condition::any()
+                        .add(employee::Column::Id.eq(v.employee_id))
+                        .add(employee::Column::DepartmentId.eq(Some(d))),
+                )
+            } else {
+                q.filter(employee::Column::Id.eq(v.employee_id))
+            };
+        }
+    }
+
+    q.limit(limit).all(db).await.map_err(KabiPayError::from)
 }
 
 /// Payload for a new `employee` row (no GraphQL types here).

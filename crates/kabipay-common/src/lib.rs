@@ -10,16 +10,21 @@
 //!
 //! Every service depends on this crate via `kabipay-common = { workspace = true }`.
 
-pub mod error;
+pub mod client_data_scope;
 pub mod context;
 pub mod db;
-pub mod pagination;
-pub mod middleware;
-pub mod jwt;
-pub mod telemetry;
+pub mod error;
 pub mod ids;
+pub mod jwt;
+pub mod middleware;
+pub mod pagination;
 pub mod subgraph;
+pub mod telemetry;
 
+pub use context::{
+    ClientContext, ClientViewerEmployee, OperatorContext, ScopeType, PERM_EMPLOYEE_MANAGE,
+    PERM_EMPLOYEE_WRITE, SCOPE_RES_ATTENDANCE, SCOPE_RES_EMPLOYEE, SCOPE_RES_EXPENSE,
+    SCOPE_RES_LEAVE,
+};
 pub use error::{KabiPayError, KabiPayResult};
-pub use context::{ClientContext, OperatorContext, ScopeType};
 pub use pagination::{PageInfo, PageInput};

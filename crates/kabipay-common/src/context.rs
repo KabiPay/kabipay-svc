@@ -4,6 +4,7 @@
 //! (different `iss` claim, different signing secret, validated by different middleware).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Data-level access control scope. Applied per resource per role via `PERMISSION_SCOPE`.
@@ -18,6 +19,54 @@ pub enum ScopeType {
     Department,
     /// Unrestricted within tenant (HR admin, payroll admin).
     All,
+}
+
+impl ScopeType {
+    /// Wider access wins when merging several role rows for the same resource.
+    pub fn rank(self) -> u8 {
+        match self {
+            ScopeType::Self_ => 1,
+            ScopeType::Team => 2,
+            ScopeType::Department => 3,
+            ScopeType::All => 4,
+        }
+    }
+
+    /// Parse a DB or JWT `scope_type` string (case-insensitive).
+    pub fn parse_loose(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "SELF" => Some(ScopeType::Self_),
+            "TEAM" => Some(ScopeType::Team),
+            "DEPARTMENT" => Some(ScopeType::Department),
+            "ALL" => Some(ScopeType::All),
+            _ => None,
+        }
+    }
+
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            ScopeType::Self_ => "SELF",
+            ScopeType::Team => "TEAM",
+            ScopeType::Department => "DEPARTMENT",
+            ScopeType::All => "ALL",
+        }
+    }
+}
+
+/// `permission` table `resource` values used for `permission_scope` + list filtering.
+pub const SCOPE_RES_EMPLOYEE: &str = "employee";
+/// Leave requests and balances roll up under the leave module resource.
+pub const SCOPE_RES_LEAVE: &str = "leave";
+/// Expense claims — list/filter scope (M10); align `permission_scope.resource`.
+pub const SCOPE_RES_EXPENSE: &str = "expense";
+/// Attendance + timesheet rows — list/filter scope (M10).
+pub const SCOPE_RES_ATTENDANCE: &str = "attendance";
+
+/// The caller’s employee row fields needed for `TEAM` / `DEPARTMENT` list filters.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientViewerEmployee {
+    pub employee_id: Uuid,
+    pub department_id: Option<Uuid>,
 }
 
 /// Context attached to every operator-plane request after `operator_auth` middleware runs.
@@ -60,12 +109,17 @@ pub struct ClientContext {
 impl ClientContext {
     /// Returns `true` if the user has any of the provided permissions (OR semantics).
     pub fn has_any_permission(&self, perms: &[&str]) -> bool {
-        perms.iter().any(|p| self.permissions.iter().any(|owned| owned == p))
+        perms
+            .iter()
+            .any(|p| self.permissions.iter().any(|owned| owned == p))
     }
 
     /// Returns the effective scope for a resource, defaulting to `Self_` if no scope is defined.
     pub fn scope_for(&self, resource: &str) -> ScopeType {
-        self.scopes.get(resource).copied().unwrap_or(ScopeType::Self_)
+        self.scopes
+            .get(resource)
+            .copied()
+            .unwrap_or(ScopeType::Self_)
     }
 }
 
@@ -107,7 +161,97 @@ pub struct ClientClaims {
     pub roles: Vec<String>,
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// Widest `ScopeType` per `permission.resource` (keys: e.g. `employee`, `leave` — wire values
+    /// are `SELF` | `TEAM` | `DEPARTMENT` | `ALL`). Omitted in legacy tokens; treated as SELF.
+    #[serde(default)]
+    pub resource_scopes: HashMap<String, String>,
 }
 
 pub const OPERATOR_JWT_ISSUER: &str = "kabipay-ops";
 pub const CLIENT_JWT_ISSUER: &str = "kabipay-client";
+
+/// JWT `permissions` claim uses `resource:action` to match `permission` rows.
+pub const PERM_EMPLOYEE_WRITE: &str = "employee:write";
+/// Broader org directory edits (e.g. bulk / sensitive fields) — same gate as write for now.
+pub const PERM_EMPLOYEE_MANAGE: &str = "employee:manage";
+/// Approve or reject other users' leave requests.
+pub const PERM_LEAVE_APPROVE: &str = "leave:approve";
+/// Approve or reject expense claims submitted by others.
+pub const PERM_EXPENSE_APPROVE: &str = "expense:approve";
+/// Approve or reject **tax proof** lines (submitted actuals vs declared deductions).
+pub const PERM_TAX_PROOF_APPROVE: &str = "tax:approve";
+/// Export India payroll statutory artefacts (e.g. monthly TDS summary CSV) for the tenant.
+pub const PERM_PAYROLL_STATUTORY_EXPORT: &str = "payroll:statutory_export";
+
+impl ClientClaims {
+    /// True if the token includes one of the permission strings (exact match on wire).
+    pub fn has_any_permission(&self, perms: &[&str]) -> bool {
+        perms
+            .iter()
+            .any(|p| self.permissions.iter().any(|owned| owned == p))
+    }
+
+    /// Create/update other users' **employee** rows (not self-service profile edits).
+    pub fn can_manage_employee_directory(&self) -> bool {
+        if self.has_any_permission(&[PERM_EMPLOYEE_WRITE, PERM_EMPLOYEE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Approve or reject **leave** requests (not the employee's own self-service only path).
+    pub fn can_approve_leave(&self) -> bool {
+        if self.has_any_permission(&[PERM_LEAVE_APPROVE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Approve or reject **expense** claims (approver/manager path).
+    pub fn can_approve_expense(&self) -> bool {
+        if self.has_any_permission(&[PERM_EXPENSE_APPROVE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Approve or reject **tax deduction proof** lines (documented actuals).
+    pub fn can_approve_tax_proof(&self) -> bool {
+        if self.has_any_permission(&[PERM_TAX_PROOF_APPROVE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Download tenant-wide **statutory payroll** reports (TDS summary CSV, etc.).
+    pub fn can_export_payroll_statutory(&self) -> bool {
+        if self.has_any_permission(&[PERM_PAYROLL_STATUTORY_EXPORT]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Effective data scope for list/detail filters (`permission_scope` merged at login). Defaults
+    /// to `Self_` when unset (legacy tokens and least-privilege default).
+    pub fn data_scope(&self, resource: &str) -> ScopeType {
+        self.resource_scopes
+            .get(resource)
+            .and_then(|s| ScopeType::parse_loose(s))
+            .unwrap_or(ScopeType::Self_)
+    }
+}

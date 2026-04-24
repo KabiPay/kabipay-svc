@@ -39,7 +39,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{jwt::JwtConfig, not_implemented, password, state::AppState, tokens};
+use crate::{jwt::JwtConfig, not_implemented, password, rbac, state::AppState, tokens};
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -340,9 +340,17 @@ async fn issue_client_tokens(
         .one(tenant_conn)
         .await?
         .map(|e| e.id);
-    let access = state
-        .jwt
-        .issue_client_access(user_id, tenant_id, email, employee_id)?;
+    let (roles, permissions) = rbac::load_client_rbac(tenant_conn, user_id).await?;
+    let resource_scopes = rbac::load_client_resource_scopes(tenant_conn, tenant_id, user_id).await?;
+    let access = state.jwt.issue_client_access(
+        user_id,
+        tenant_id,
+        email,
+        employee_id,
+        roles,
+        permissions,
+        resource_scopes,
+    )?;
     // Prefix refresh with tenant id so `client_refresh` / `client_logout`
     // can look up the correct tenant schema without keeping a separate
     // reverse index. Stored hash is of the full prefixed string.

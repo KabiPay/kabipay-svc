@@ -1,0 +1,265 @@
+//! Polls tenant `outbox_event` rows (`PENDING`), claims with `FOR UPDATE SKIP LOCKED`,
+//! delivers (structured log + optional HTTP webhook), then marks `PROCESSED` or
+//! `FAILED` / requeues with backoff fields.
+
+use anyhow::Context;
+use chrono::Utc;
+use kabipay_common::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
+use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
+use kabipay_common::telemetry::init_tracing;
+use kabipay_db_entities::ops::tenant_database;
+use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbBackend, EntityTrait, FromQueryResult,
+    QueryFilter, Set, Statement, TransactionTrait,
+};
+use serde_json::json;
+use std::collections::HashSet;
+use std::time::Duration;
+use uuid::Uuid;
+
+const STATUS_PENDING: &str = "PENDING";
+const STATUS_PROCESSING: &str = "PROCESSING";
+const STATUS_PROCESSED: &str = "PROCESSED";
+const STATUS_FAILED: &str = "FAILED";
+
+#[derive(Debug, FromQueryResult)]
+struct PickId {
+    id: Uuid,
+}
+
+fn poll_interval() -> Duration {
+    let ms: u64 = std::env::var("OUTBOX_POLL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    Duration::from_millis(ms.max(250))
+}
+
+fn max_retries() -> i32 {
+    std::env::var("OUTBOX_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
+        .max(1)
+}
+
+fn webhook_url() -> Option<String> {
+    let v = std::env::var("OUTBOX_WEBHOOK_URL").ok()?;
+    let t = v.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+async fn active_tenant_ids(ops: &DatabaseConnection) -> anyhow::Result<Vec<Uuid>> {
+    let rows = tenant_database::Entity::find()
+        .filter(tenant_database::Column::IsActive.eq(true))
+        .all(ops)
+        .await
+        .context("list tenant_database")?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for r in rows {
+        if seen.insert(r.tenant_id) {
+            out.push(r.tenant_id);
+        }
+    }
+    Ok(out)
+}
+
+async fn claim_next_pending(
+    tenant_db: &DatabaseConnection,
+    tenant_id: Uuid,
+) -> anyhow::Result<Option<outbox_event::Model>> {
+    let txn = tenant_db.begin().await.context("begin claim txn")?;
+    let pick_stmt = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        r#"SELECT id FROM outbox_event
+           WHERE tenant_id = $1 AND status = $2
+           ORDER BY created_at ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1"#,
+        vec![tenant_id.into(), STATUS_PENDING.into()],
+    );
+    let picked = PickId::find_by_statement(pick_stmt)
+        .one(&txn)
+        .await
+        .context("pick pending outbox row")?;
+    let Some(picked) = picked else {
+        txn.commit().await?;
+        return Ok(None);
+    };
+
+    let mut am: outbox_event::ActiveModel = outbox_event::Entity::find_by_id(picked.id)
+        .one(&txn)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("outbox row vanished after lock"))?
+        .into();
+    am.status = Set(STATUS_PROCESSING.into());
+    let updated = am.update(&txn).await.context("set PROCESSING")?;
+    txn.commit().await?;
+    Ok(Some(updated))
+}
+
+async fn mark_processed(tenant_db: &DatabaseConnection, id: Uuid) -> anyhow::Result<()> {
+    let Some(m) = outbox_event::Entity::find_by_id(id)
+        .one(tenant_db)
+        .await
+        .context("load outbox for PROCESSED")?
+    else {
+        return Ok(());
+    };
+    if m.status != STATUS_PROCESSING {
+        return Ok(());
+    }
+    let mut am: outbox_event::ActiveModel = m.into();
+    am.status = Set(STATUS_PROCESSED.into());
+    am.processed_at = Set(Some(Utc::now()));
+    am.last_error = Set(None);
+    am.update(tenant_db).await.context("mark PROCESSED")?;
+    Ok(())
+}
+
+async fn mark_failure(
+    tenant_db: &DatabaseConnection,
+    id: Uuid,
+    prev_retry: i32,
+    err: &str,
+    cap: i32,
+) -> anyhow::Result<()> {
+    let Some(m) = outbox_event::Entity::find_by_id(id)
+        .one(tenant_db)
+        .await
+        .context("load outbox for failure")?
+    else {
+        return Ok(());
+    };
+    if m.status != STATUS_PROCESSING {
+        return Ok(());
+    }
+    let next_retry = prev_retry + 1;
+    let (status, processed_at) = if next_retry >= cap {
+        (STATUS_FAILED, Some(Utc::now()))
+    } else {
+        (STATUS_PENDING, None)
+    };
+    let truncated = if err.len() > 2000 {
+        format!("{}…", &err[..1997])
+    } else {
+        err.to_string()
+    };
+    let mut am: outbox_event::ActiveModel = m.into();
+    am.status = Set(status.into());
+    am.retry_count = Set(next_retry);
+    am.last_error = Set(Some(truncated));
+    am.processed_at = Set(processed_at);
+    am.update(tenant_db).await.context("mark failure / retry")?;
+    Ok(())
+}
+
+async fn deliver_event(model: &outbox_event::Model) -> anyhow::Result<()> {
+    tracing::info!(
+        tenant_id = %model.tenant_id,
+        outbox_id = %model.id,
+        aggregate_type = %model.aggregate_type,
+        aggregate_id = %model.aggregate_id,
+        event_type = %model.event_type,
+        retry_count = model.retry_count,
+        "outbox deliver"
+    );
+    if let Some(url) = webhook_url() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("reqwest client")?;
+        let body = json!({
+            "schema_version": 1,
+            "outbox_id": model.id,
+            "tenant_id": model.tenant_id,
+            "aggregate_type": model.aggregate_type,
+            "aggregate_id": model.aggregate_id,
+            "event_type": model.event_type,
+            "payload": model.payload,
+            "created_at": model.created_at,
+        });
+        let res = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("webhook POST")?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            anyhow::bail!("webhook returned {status}: {text}");
+        }
+    }
+    Ok(())
+}
+
+async fn process_tenant_outbox(
+    tenant_db: &DatabaseConnection,
+    tenant_id: Uuid,
+    cap: i32,
+) -> anyhow::Result<usize> {
+    let mut n = 0;
+    while let Some(ev) = claim_next_pending(tenant_db, tenant_id).await? {
+        n += 1;
+        match deliver_event(&ev).await {
+            Ok(()) => mark_processed(tenant_db, ev.id).await?,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    outbox_id = %ev.id,
+                    "outbox delivery failed"
+                );
+                mark_failure(tenant_db, ev.id, ev.retry_count, &e.to_string(), cap).await?;
+            }
+        }
+    }
+    Ok(n)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    init_tracing("kabipay-outbox-worker");
+
+    let dsn = ops_dsn_from_env();
+    let ops_db = connect_ops_db(&dsn)
+        .await
+        .map_err(|e| anyhow::anyhow!("ops db {dsn}: {e}"))?;
+    let cache = TenantDbCache::new();
+    let fallback: TenantDbConfig = tenant_db_config_from_env();
+    let cap = max_retries();
+    let interval = poll_interval();
+
+    tracing::info!(
+        poll_ms = interval.as_millis(),
+        max_retries = cap,
+        webhook = webhook_url().is_some(),
+        "outbox worker started"
+    );
+
+    loop {
+        match active_tenant_ids(&ops_db).await {
+            Ok(tenants) => {
+                for tid in tenants {
+                    match resolve_tenant_db(tid, &ops_db, &cache, &fallback).await {
+                        Ok(tdb) => {
+                            if let Err(e) = process_tenant_outbox(&tdb, tid, cap).await {
+                                tracing::error!(%tid, error = %e, "tenant outbox sweep failed");
+                            }
+                        }
+                        Err(e) => tracing::error!(%tid, error = %e, "resolve tenant db failed"),
+                    }
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "list tenants failed"),
+        }
+        tokio::time::sleep(interval).await;
+    }
+}

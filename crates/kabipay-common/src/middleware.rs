@@ -98,10 +98,7 @@ fn extract_client_claims(
 /// for an ACTIVE row for (tenant_id, module_code). Returns `ModuleNotSubscribed` otherwise.
 ///
 /// TODO: wire to a shared subscription-lookup helper once `kabipay-tenant` is available.
-pub async fn module_guard_placeholder(
-    req: Request,
-    next: Next,
-) -> Result<Response, KabiPayError> {
+pub async fn module_guard_placeholder(req: Request, next: Next) -> Result<Response, KabiPayError> {
     // Placeholder pass-through — real implementation will query tenant_subscription.
     Ok(next.run(req).await)
 }

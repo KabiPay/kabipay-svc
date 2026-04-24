@@ -15,7 +15,7 @@
         0000 foundation   : department, designation, user, employee (original demo)
         0010 shift/attend : shift (DAY/NIGHT), attendance for today
         0011 leave        : leave_type (CL/SL), leave_request (PENDING)
-        0012 payroll      : salary_component (BASIC/HRA), payroll_cycle (current month)
+        0012 payroll      : salary_component (BASIC/HRA), payroll_cycle (current month), demo payslip + TDS
         0013 tax          : tax_configuration_version, tax_slab x 2
         0014 benefits     : benefit_type, benefit_plan
         0015 expense      : expense_category, expense (SUBMITTED)
@@ -56,24 +56,81 @@
 .PARAMETER DbPassword
     Password for DbUser. Defaults to changeme.
 
-.PARAMETER PostgresContainer
-    Running postgres container name. Defaults to kabipay_postgres.
+.PARAMETER PostgresHost
+    If set, connect to this host (e.g. Aiven). Uses `kabipay-database/run-sql.cjs` (Node + `pg`). Use with -PostgresPort, -PostgresSsl.
+
+.PARAMETER PostgresPort
+    Port when -PostgresHost is set.
+
+.PARAMETER PostgresSsl
+    When -PostgresHost is set, set PGSSLMODE=require (required for Aiven).
 
 .EXAMPLE
     .\seed-demo-data.ps1 -TenantId 5a3b... -Schema tenant_demo0001
+.EXAMPLE
+    .\seed-demo-data.ps1 -TenantId ... -Schema tenant_... -PostgresHost "pg-....aivencloud.com" -PostgresPort 12507 -DbName defaultdb -DbUser avnadmin -DbPassword "..." -PostgresSsl
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$TenantId,
     [Parameter(Mandatory = $true)][ValidatePattern('^tenant_[a-z0-9_]{1,50}$')][string]$Schema,
-    [string]$DbName = 'kabipay_dev',
-    [string]$DbUser = 'kabipay',
-    [string]$DbPassword = 'changeme',
-    [string]$PostgresContainer = 'kabipay_postgres'
+    [string]$DbName,
+    [string]$DbUser,
+    [string]$DbPassword,
+    [string]$PostgresHost = '',
+    [int]$PostgresPort = 5432,
+    [switch]$PostgresSsl
 )
 
 $ErrorActionPreference = 'Stop'
+
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$DatabaseDir = Join-Path $RepoRoot 'kabipay-database'
+$SvcEnv = Join-Path $RepoRoot 'kabipay-svc\.env'
+$DbEnv = Join-Path $DatabaseDir '.env'
+$RunSql = Join-Path $DatabaseDir 'run-sql.cjs'
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is required" }
+if (-not (Test-Path $RunSql)) { throw "Missing run-sql.cjs. From kabipay-database: npm install" }
+function Import-DotEnvFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -match '^\s*#' -or $line -eq '') { return }
+        $i = $line.IndexOf('=')
+        if ($i -lt 1) { return }
+        $k = $line.Substring(0, $i).Trim()
+        $v = $line.Substring($i + 1).Trim()
+        if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }
+        if ($k) { Set-Item -Path "Env:$k" -Value $v }
+    }
+}
+Import-DotEnvFile -Path $SvcEnv
+Import-DotEnvFile -Path $DbEnv
+$isRemoteInEnv = $env:POSTGRES_HOST -and $env:POSTGRES_HOST -notin @('localhost', '127.0.0.1', '')
+if ($PostgresHost -or $isRemoteInEnv) {
+    if ($PostgresHost) { $env:POSTGRES_HOST = $PostgresHost }
+    if ($PostgresSsl) { $env:POSTGRES_SSLMODE = 'require' }
+    if ($PSBoundParameters.ContainsKey('PostgresPort')) { $env:POSTGRES_PORT = "$PostgresPort" }
+    if ($PSBoundParameters.ContainsKey('DbName') -and -not [string]::IsNullOrWhiteSpace($DbName)) { $env:POSTGRES_DB = $DbName }
+    if ($PSBoundParameters.ContainsKey('DbUser') -and -not [string]::IsNullOrWhiteSpace($DbUser)) { $env:POSTGRES_USER = $DbUser }
+    if ($PSBoundParameters.ContainsKey('DbPassword') -and -not [string]::IsNullOrWhiteSpace($DbPassword)) { $env:POSTGRES_PASSWORD = $DbPassword }
+} else {
+    $env:POSTGRES_HOST = 'localhost'
+    if ($PSBoundParameters.ContainsKey('PostgresPort')) { $env:POSTGRES_PORT = "$PostgresPort" }
+    elseif (-not $env:POSTGRES_PORT) { $env:POSTGRES_PORT = '5432' }
+    if ($PSBoundParameters.ContainsKey('DbName') -and -not [string]::IsNullOrWhiteSpace($DbName)) { $env:POSTGRES_DB = $DbName }
+    elseif (-not $env:POSTGRES_DB) { $env:POSTGRES_DB = 'kabipay_dev' }
+    if ($PSBoundParameters.ContainsKey('DbUser') -and -not [string]::IsNullOrWhiteSpace($DbUser)) { $env:POSTGRES_USER = $DbUser }
+    elseif (-not $env:POSTGRES_USER) { $env:POSTGRES_USER = 'kabipay' }
+    if ($PSBoundParameters.ContainsKey('DbPassword') -and -not [string]::IsNullOrWhiteSpace($DbPassword)) { $env:POSTGRES_PASSWORD = $DbPassword }
+    elseif (-not $env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD = 'changeme' }
+    Remove-Item Env:POSTGRES_SSLMODE -ErrorAction SilentlyContinue
+}
+if ([string]::IsNullOrWhiteSpace($env:POSTGRES_HOST) -or [string]::IsNullOrWhiteSpace($env:POSTGRES_PORT) -or [string]::IsNullOrWhiteSpace($env:POSTGRES_DB) -or [string]::IsNullOrWhiteSpace($env:POSTGRES_USER) -or [string]::IsNullOrWhiteSpace($env:POSTGRES_PASSWORD)) {
+    throw "Set POSTGRES_* in $DbEnv or $SvcEnv (or pass -Postgres* / -Db*)"
+}
 
 function New-DeterministicUuid {
     param([Parameter(Mandatory=$true)][string]$Seed)
@@ -93,6 +150,16 @@ $DepartmentId        = New-DeterministicUuid -Seed "${Schema}:dept:engineering"
 $DesignationId       = New-DeterministicUuid -Seed "${Schema}:desig:software-engineer"
 $UserId              = New-DeterministicUuid -Seed "${Schema}:user:demo"
 $EmployeeId          = New-DeterministicUuid -Seed "${Schema}:employee:demo"
+$RoleHrAdminId       = New-DeterministicUuid -Seed "${Schema}:role:HR_ADMIN"
+$PermEmployeeWriteId = New-DeterministicUuid -Seed "${Schema}:perm:employee:write"
+$PermLeaveApproveId  = New-DeterministicUuid -Seed "${Schema}:perm:leave:approve"
+$PermExpenseApproveId = New-DeterministicUuid -Seed "${Schema}:perm:expense:approve"
+$PermTaxProofApproveId = New-DeterministicUuid -Seed "${Schema}:perm:tax:approve"
+$PermPayrollStatutoryId = New-DeterministicUuid -Seed "${Schema}:perm:payroll:statutory_export"
+$ScopeScopeEmployeeAllId  = New-DeterministicUuid -Seed "${Schema}:permission_scope:employee:write:ALL"
+$ScopeScopeLeaveAllId   = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:ALL"
+$ScopeScopeExpenseAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:ALL"
+$ScopeScopeAttendanceAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:read:ALL"
 
 # Shift / attendance (0010)
 $ShiftDayId          = New-DeterministicUuid -Seed "${Schema}:shift:day"
@@ -108,6 +175,8 @@ $LeaveRequest1Id     = New-DeterministicUuid -Seed "${Schema}:leave_request:1"
 $SalaryCompBasicId   = New-DeterministicUuid -Seed "${Schema}:salary_component:basic"
 $SalaryCompHraId     = New-DeterministicUuid -Seed "${Schema}:salary_component:hra"
 $PayrollCycleId      = New-DeterministicUuid -Seed "${Schema}:payroll_cycle:current"
+$PayslipDemoId       = New-DeterministicUuid -Seed "${Schema}:payslip:demo"
+$EmployeePanId       = New-DeterministicUuid -Seed "${Schema}:employee_pan:demo"
 
 # Tax (0013)
 $TaxConfigId         = New-DeterministicUuid -Seed "${Schema}:tax_config:fy2026"
@@ -152,6 +221,7 @@ $GrievCaseId         = New-DeterministicUuid -Seed "${Schema}:grievance_case:1"
 
 # Workflow (0025)
 $WorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:leave-approval"
+$WorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:leave:1"
 $WorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:1"
 
 # Notification / Communication (0027)
@@ -163,6 +233,8 @@ $ModuleEmployeeId    = New-DeterministicUuid -Seed "ops:module:EMPLOYEE"
 $ModuleLeaveId       = New-DeterministicUuid -Seed "ops:module:LEAVE"
 $ModulePayrollId     = New-DeterministicUuid -Seed "ops:module:PAYROLL"
 $ModuleRecruitId     = New-DeterministicUuid -Seed "ops:module:RECRUIT"
+$ModuleExpenseId     = New-DeterministicUuid -Seed "ops:module:EXPENSE"
+$ModuleTaxId         = New-DeterministicUuid -Seed "ops:module:TAX"
 $OpRoleAdminId       = New-DeterministicUuid -Seed "ops:operator_role:ADMIN"
 $OpRoleSupportId     = New-DeterministicUuid -Seed "ops:operator_role:SUPPORT"
 $OpUserId            = New-DeterministicUuid -Seed "ops:operator_user:admin"
@@ -189,10 +261,13 @@ $PasswordHash = '$argon2id$v=19$m=19456,t=2,p=1$CDQNnKaKe519h5WXXU1DaA$IiZxOr7Av
 function Invoke-TenantSql {
     param([Parameter(Mandatory=$true)][string]$Sql, [string]$Label)
     if ($Label) { Write-Host "==> $Label" -ForegroundColor Cyan }
-    docker exec -i -e PGPASSWORD=$DbPassword $PostgresContainer `
-        psql -U $DbUser -d $DbName -v ON_ERROR_STOP=1 -X -c $Sql
-    if ($LASTEXITCODE -ne 0) {
-        throw "Seed step '$Label' failed (exit $LASTEXITCODE)."
+    $tmp = [System.IO.Path]::GetTempFileName() + '.sql'
+    try {
+        [System.IO.File]::WriteAllText($tmp, $Sql, [System.Text.UTF8Encoding]::new($false))
+        & node $RunSql -f $tmp
+        if ($LASTEXITCODE -ne 0) { throw "Seed step '$Label' failed (exit $LASTEXITCODE)." }
+    } finally {
+        Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
     }
 }
 
@@ -221,6 +296,70 @@ INSERT INTO "$Schema".employee (
     'EMP0001', 'Demo', 'Employee', 'PERMANENT', 'ACTIVE',
     CURRENT_DATE
 ) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".employee_pan (
+    id, tenant_id, employee_id, pan_number, is_primary, is_verified
+) VALUES (
+    '$EmployeePanId', '$TenantId', '$EmployeeId', 'ABCDE1234F', true, false
+) ON CONFLICT (id) DO NOTHING;
+
+-- RBAC: demo user can create/update employees (JWT permissions loaded at login)
+INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
+VALUES ('$RoleHrAdminId', '$TenantId', 'HR_ADMIN', 'Employee directory admin', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermEmployeeWriteId', 'employee', 'write', '$ModuleEmployeeId', 'Create and update employee records')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermLeaveApproveId', 'leave', 'approve', '$ModuleLeaveId', 'Approve or reject leave requests')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermExpenseApproveId', 'expense', 'approve', '$ModuleExpenseId', 'Approve or reject expense claims')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermTaxProofApproveId', 'tax', 'approve', '$ModuleTaxId', 'Approve tax deduction proofs (declared vs actuals)')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermPayrollStatutoryId', 'payroll', 'statutory_export', '$ModulePayrollId', 'Export statutory payroll reports (e.g. India TDS summary CSV)')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermEmployeeWriteId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermLeaveApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermExpenseApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermTaxProofApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermPayrollStatutoryId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$UserId', '$RoleHrAdminId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- Gap H: data scope for list filters (employee / leave) — ALL for admin role
+INSERT INTO "$Schema".permission_scope (id, tenant_id, role_id, resource, action, scope_type)
+VALUES
+  ('$ScopeScopeEmployeeAllId', '$TenantId', '$RoleHrAdminId', 'employee', 'write', 'ALL'),
+  ('$ScopeScopeLeaveAllId',    '$TenantId', '$RoleHrAdminId', 'leave',   'approve', 'ALL'),
+  ('$ScopeScopeExpenseAllId',  '$TenantId', '$RoleHrAdminId', 'expense', 'approve', 'ALL'),
+  ('$ScopeScopeAttendanceAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'read', 'ALL')
+ON CONFLICT (role_id, resource, action) DO NOTHING;
 "@
 Invoke-TenantSql -Label "0000 foundation (department, designation, user, employee)" -Sql $SqlFoundation
 
@@ -293,8 +432,21 @@ INSERT INTO "$Schema".payroll_cycle (
     (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')::date
 )
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".payslip (
+    id, tenant_id, employee_id, payroll_cycle_id,
+    gross_salary, total_deductions, net_salary,
+    pf_employee, tds_amount, professional_tax,
+    status
+) VALUES (
+    '$PayslipDemoId', '$TenantId', '$EmployeeId', '$PayrollCycleId',
+    85000.0000, 12500.0000, 72500.0000,
+    1800.0000, 4200.0000, 200.0000,
+    'GENERATED'
+)
+ON CONFLICT (id) DO NOTHING;
 "@
-Invoke-TenantSql -Label "0012 payroll (components + cycle)" -Sql $SqlPayroll
+Invoke-TenantSql -Label "0012 payroll (components + cycle + demo payslip)" -Sql $SqlPayroll
 
 # =====================================================================
 # 5. TAX (0013)
@@ -505,12 +657,27 @@ INSERT INTO "$Schema".workflow (id, tenant_id, name, entity_type, is_active)
 VALUES ('$WorkflowId', '$TenantId', 'Leave Approval', 'LEAVE_REQUEST', true)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$WorkflowStep1Id', '$TenantId', '$WorkflowId', 1, 'Manager approval',
+    NULL, NULL, false, NULL
+) ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".workflow_instance (
-    id, tenant_id, workflow_id, entity_type, entity_id, status
+    id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id
 ) VALUES (
     '$WorkflowInstanceId', '$TenantId', '$WorkflowId',
-    'LEAVE_REQUEST', '$LeaveRequest1Id', 'IN_PROGRESS'
-) ON CONFLICT (id) DO NOTHING;
+    'LEAVE_REQUEST', '$LeaveRequest1Id', 'IN_PROGRESS', '$WorkflowStep1Id'
+) ON CONFLICT (id) DO UPDATE SET
+    current_step_id = EXCLUDED.current_step_id,
+    status = EXCLUDED.status,
+    updated_at = NOW();
+
+UPDATE "$Schema".leave_request
+SET workflow_instance_id = '$WorkflowInstanceId', updated_at = NOW()
+WHERE id = '$LeaveRequest1Id' AND (workflow_instance_id IS DISTINCT FROM '$WorkflowInstanceId');
 "@
 Invoke-TenantSql -Label "0025 workflow (workflow + instance)" -Sql $SqlWorkflow
 
@@ -543,12 +710,14 @@ Invoke-TenantSql -Label "0027 communication (announcement + notification)" -Sql 
 #     modules, subscriptions, billing_cycle, invoice, payment, operator_*
 # =====================================================================
 $SqlOps = @"
--- Module catalogue (4 starter modules, idempotent)
+-- Module catalogue (starter modules, idempotent)
 INSERT INTO kabipay_ops.module (id, code, name, category, description, is_active, display_order, is_core) VALUES
     ('$ModuleEmployeeId', 'EMPLOYEE',    'Employee Core',       'CORE', 'Master employee records.',        true, 10, true),
     ('$ModuleLeaveId',    'LEAVE',       'Leave Management',    'HR',   'Policies, balances, requests.',   true, 20, false),
     ('$ModulePayrollId',  'PAYROLL',     'Payroll Processing',  'HR',   'Cycles, payslips, compliance.',   true, 30, false),
-    ('$ModuleRecruitId',  'RECRUITMENT', 'Talent Acquisition',  'HR',   'Job postings and applications.',  true, 40, false)
+    ('$ModuleRecruitId',  'RECRUITMENT', 'Talent Acquisition',  'HR',   'Job postings and applications.',  true, 40, false),
+    ('$ModuleExpenseId',  'EXPENSE',     'Expense Management',  'HR',   'Claims, policies, reimbursements.', true, 25, false),
+    ('$ModuleTaxId',      'TAX',         'Tax & Statutory',     'HR',   'Regimes, proofs, TDS, filings.',    true, 22, false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Two active subscriptions for this tenant
@@ -622,6 +791,8 @@ UNION ALL SELECT 'tenant.leave_type',         COUNT(*) FROM "$Schema".leave_type
 UNION ALL SELECT 'tenant.leave_request',      COUNT(*) FROM "$Schema".leave_request
 UNION ALL SELECT 'tenant.salary_component',   COUNT(*) FROM "$Schema".salary_component
 UNION ALL SELECT 'tenant.payroll_cycle',      COUNT(*) FROM "$Schema".payroll_cycle
+UNION ALL SELECT 'tenant.payslip',            COUNT(*) FROM "$Schema".payslip
+UNION ALL SELECT 'tenant.employee_pan',       COUNT(*) FROM "$Schema".employee_pan
 UNION ALL SELECT 'tenant.tax_config_ver',     COUNT(*) FROM "$Schema".tax_configuration_version
 UNION ALL SELECT 'tenant.tax_slab',           COUNT(*) FROM "$Schema".tax_slab
 UNION ALL SELECT 'tenant.benefit_plan',       COUNT(*) FROM "$Schema".benefit_plan

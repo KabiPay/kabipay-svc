@@ -19,7 +19,10 @@ pub struct PageInput {
 
 impl Default for PageInput {
     fn default() -> Self {
-        Self { page: 1, per_page: DEFAULT_PER_PAGE }
+        Self {
+            page: 1,
+            per_page: DEFAULT_PER_PAGE,
+        }
     }
 }
 
@@ -55,7 +58,11 @@ pub struct PageInfo {
 impl PageInfo {
     pub fn compute(page_input: PageInput, total_count: u64) -> Self {
         let c = page_input.clamp();
-        let total_pages = if c.per_page == 0 { 0 } else { total_count.div_ceil(c.per_page) };
+        let total_pages = if c.per_page == 0 {
+            0
+        } else {
+            total_count.div_ceil(c.per_page)
+        };
         Self {
             total_count,
             total_pages,
@@ -73,14 +80,24 @@ mod tests {
 
     #[test]
     fn clamps_per_page() {
-        let p = PageInput { page: 0, per_page: 9999 }.clamp();
+        let p = PageInput {
+            page: 0,
+            per_page: 9999,
+        }
+        .clamp();
         assert_eq!(p.page, 1);
         assert_eq!(p.per_page, MAX_PER_PAGE);
     }
 
     #[test]
     fn computes_page_info() {
-        let info = PageInfo::compute(PageInput { page: 2, per_page: 25 }, 120);
+        let info = PageInfo::compute(
+            PageInput {
+                page: 2,
+                per_page: 25,
+            },
+            120,
+        );
         assert_eq!(info.total_pages, 5);
         assert_eq!(info.current_page, 2);
         assert!(info.has_next_page);

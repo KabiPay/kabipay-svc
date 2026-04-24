@@ -2,7 +2,9 @@
 
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-use kabipay_db_entities::tenant::d0010_time_shift_roster::{attendance, holiday, shift, timesheet_entry};
+use kabipay_db_entities::tenant::d0010_time_shift_roster::{
+    attendance, holiday, shift, timesheet_entry,
+};
 
 use crate::services::attendance_service::PunchDaySummary;
 
@@ -46,9 +48,31 @@ pub struct AttendanceDto {
     pub work_date: NaiveDate,
     pub check_in_time: Option<NaiveTime>,
     pub check_out_time: Option<NaiveTime>,
+    /// WGS84 latitude for punch-in, when recorded (string decimal, matches DB `NUMERIC`).
+    pub check_in_lat: Option<String>,
+    pub check_in_lng: Option<String>,
+    /// WGS84 coordinates for punch-out, when recorded.
+    pub check_out_lat: Option<String>,
+    pub check_out_lng: Option<String>,
     pub status: Option<String>,
     pub source: Option<String>,
     pub late_minutes: Option<i32>,
+}
+
+/// Optional client GPS (browser / mobile) for the **current** punch (in or out).
+#[derive(InputObject, Clone, Debug)]
+pub struct PunchTodayInput {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
+/// Log a **completed** check-in and check-out for a **past or today** `workDate` when both
+/// live punches were missed. Same calendar day only: check-in time must be before check-out.
+#[derive(InputObject, Clone, Debug)]
+pub struct AddManualAttendanceSegmentInput {
+    pub work_date: NaiveDate,
+    pub check_in_time: NaiveTime,
+    pub check_out_time: NaiveTime,
 }
 
 /// One work day: all punch segments + sum of completed segment lengths (minutes).
@@ -140,6 +164,10 @@ impl From<attendance::Model> for AttendanceDto {
             work_date: m.work_date,
             check_in_time: m.check_in_time,
             check_out_time: m.check_out_time,
+            check_in_lat: m.check_in_lat.map(|d| d.to_string()),
+            check_in_lng: m.check_in_lng.map(|d| d.to_string()),
+            check_out_lat: m.check_out_lat.map(|d| d.to_string()),
+            check_out_lng: m.check_out_lng.map(|d| d.to_string()),
             status: m.status,
             source: m.source,
             late_minutes: m.late_minutes,

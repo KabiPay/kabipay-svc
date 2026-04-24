@@ -3,6 +3,10 @@
 use async_graphql::{Context, Object, Result, ID};
 use chrono::{NaiveDate, Utc};
 use kabipay_common::{
+    client_data_scope::{
+        data_scope_from_context, resolve_employee_scope_filter, resolve_viewer_employee,
+    },
+    context::SCOPE_RES_ATTENDANCE,
     subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
@@ -43,7 +47,12 @@ impl QueryRoot {
     ) -> Result<Vec<AttendanceDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
-        let rows = attendance_service::list_attendance(&db, tenant_id, limit)
+        let scope = data_scope_from_context(ctx, SCOPE_RES_ATTENDANCE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let rows = attendance_service::list_attendance(&db, tenant_id, limit, &filt)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(AttendanceDto::from).collect())
@@ -103,6 +112,14 @@ impl QueryRoot {
                 .await
                 .map_err(KabiPayError::into_graphql)?
         };
+        let scope = data_scope_from_context(ctx, SCOPE_RES_ATTENDANCE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        if !filt.allows_employee(emp) {
+            return Ok(vec![]);
+        }
         let rows = attendance_service::list_timesheet_entries(&db, tenant_id, emp, limit)
             .await
             .map_err(KabiPayError::into_graphql)?;

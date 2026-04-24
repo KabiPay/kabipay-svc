@@ -1,14 +1,14 @@
 //! Write operations for the leave domain.
 
-use async_graphql::{Context, Object, Result};
+use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
 
+use crate::resolvers::query::parse_uuid;
 use crate::resolvers::types::{LeaveRequestDto, SubmitLeaveRequestInput};
 use crate::services::leave_service;
-use crate::resolvers::query::parse_uuid;
 
 pub struct MutationRoot;
 
@@ -39,6 +39,51 @@ impl MutationRoot {
         )
         .await
         .map_err(KabiPayError::into_graphql)?;
+        Ok(LeaveRequestDto::from(m))
+    }
+
+    /// Set a PENDING request to APPROVED and credit used leave (see `submit_leave_request` balance flow).
+    async fn approve_leave_request(
+        &self,
+        ctx: &Context<'_>,
+        leave_request_id: ID,
+    ) -> Result<LeaveRequestDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_approve_leave() {
+            return Err(KabiPayError::Forbidden(
+                "leave approve permission required (leave:approve or HR/tenant admin role)".into(),
+            )
+            .into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = parse_uuid(&leave_request_id, "leaveRequestId")?;
+        let m = leave_service::approve_leave_request(&db, tenant_id, id, claims.sub)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(LeaveRequestDto::from(m))
+    }
+
+    /// Reject a PENDING request and release the balance reservation.
+    async fn reject_leave_request(
+        &self,
+        ctx: &Context<'_>,
+        leave_request_id: ID,
+        reason: Option<String>,
+    ) -> Result<LeaveRequestDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_approve_leave() {
+            return Err(KabiPayError::Forbidden(
+                "leave approve permission required (leave:approve or HR/tenant admin role)".into(),
+            )
+            .into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = parse_uuid(&leave_request_id, "leaveRequestId")?;
+        let m = leave_service::reject_leave_request(&db, tenant_id, id, claims.sub, reason)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
         Ok(LeaveRequestDto::from(m))
     }
 }

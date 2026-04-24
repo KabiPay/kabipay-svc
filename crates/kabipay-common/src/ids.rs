@@ -10,9 +10,7 @@ use uuid::Uuid;
 macro_rules! newtype_id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
-        )]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(pub Uuid);
 
@@ -52,8 +50,17 @@ macro_rules! newtype_id {
     };
 }
 
-newtype_id!(TenantId, "Canonical tenant identifier. Same value across all services.");
+newtype_id!(
+    TenantId,
+    "Canonical tenant identifier. Same value across all services."
+);
 newtype_id!(UserId, "Canonical user identifier (client plane).");
-newtype_id!(EmployeeId, "Canonical employee identifier. THE cross-service contract.");
+newtype_id!(
+    EmployeeId,
+    "Canonical employee identifier. THE cross-service contract."
+);
 newtype_id!(DepartmentId, "Canonical department identifier.");
-newtype_id!(OperatorUserId, "Operator-plane user identifier (isolated from UserId).");
+newtype_id!(
+    OperatorUserId,
+    "Operator-plane user identifier (isolated from UserId)."
+);

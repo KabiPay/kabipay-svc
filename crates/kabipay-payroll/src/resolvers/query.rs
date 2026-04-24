@@ -2,12 +2,16 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    client_data_scope::{
+        data_scope_from_context, resolve_employee_scope_filter, resolve_viewer_employee,
+    },
+    context::SCOPE_RES_EMPLOYEE,
+    subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{PayslipDetailDto, PayrollCycleDto, SalaryComponentDto};
+use crate::resolvers::types::{PayrollCycleDto, PayslipDetailDto, SalaryComponentDto};
 use crate::services::payroll_service;
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
@@ -53,18 +57,25 @@ impl QueryRoot {
     }
 
     /// One payslip with `lines` = `payslip_component` rows.
-    async fn payslip(
-        &self,
-        ctx: &Context<'_>,
-        id: ID,
-    ) -> Result<Option<PayslipDetailDto>> {
+    async fn payslip(&self, ctx: &Context<'_>, id: ID) -> Result<Option<PayslipDetailDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let sid = parse_uuid(&id, "id")?;
         let row = payroll_service::find_payslip_detail(&db, tenant_id, sid)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        Ok(row.map(|(p, c)| PayslipDetailDto::from_head(p, c)))
+        let Some((p, c)) = row else {
+            return Ok(None);
+        };
+        let scope = data_scope_from_context(ctx, SCOPE_RES_EMPLOYEE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        if !filt.allows_employee(p.employee_id) {
+            return Ok(None);
+        }
+        Ok(Some(PayslipDetailDto::from_head(p, c)))
     }
 
     /// When `employeeId` is omitted, uses the signed-in user’s employee id from the JWT
@@ -84,6 +95,14 @@ impl QueryRoot {
                 .await
                 .map_err(KabiPayError::into_graphql)?
         };
+        let scope = data_scope_from_context(ctx, SCOPE_RES_EMPLOYEE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        if !filt.allows_employee(empl) {
+            return Ok(vec![]);
+        }
         let list = payroll_service::list_payslips(&db, tenant_id, Some(empl), limit)
             .await
             .map_err(KabiPayError::into_graphql)?;
@@ -99,5 +118,31 @@ impl QueryRoot {
             })
             .collect();
         Ok(out)
+    }
+
+    /// **India — monthly TDS summary (CSV).** All payslips for the payroll cycle matching
+    /// `month` + `calendar year`. Requires `payroll:statutory_export` or HR / tenant admin role.
+    /// Stub for statutory filing prep — not a filed Form 24Q; values come from `payslip.tds_amount`.
+    async fn india_tds_monthly_summary_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll statutory export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_tds_monthly_summary_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
     }
 }

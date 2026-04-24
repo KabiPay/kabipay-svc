@@ -53,6 +53,8 @@ pub struct LeaveRequestDto {
     pub status: String,
     pub reason: Option<String>,
     pub applied_at: DateTime<Utc>,
+    /// Set when tenant has an active **LEAVE_REQUEST** workflow with at least one step (M8).
+    pub workflow_instance_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -115,6 +117,7 @@ impl From<leave_request::Model> for LeaveRequestDto {
             status: m.status,
             reason: m.reason,
             applied_at: m.applied_at,
+            workflow_instance_id: m.workflow_instance_id.map(|u| ID(u.to_string())),
         }
     }
 }

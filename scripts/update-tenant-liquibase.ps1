@@ -1,35 +1,75 @@
 # Run Liquibase tenant changelog **update** against an already-provisioned schema.
-# Use this after new changeSets are added (e.g. `timesheet_entry`) so existing tenants get the new tables.
+# Use this after new changeSets are added so existing tenants get the new tables.
 #
-# Requires: Docker, postgres on kabipay_default, kabipay-database on the same network as provision-tenant.ps1
+# Requires: Node + `npm install` in kabipay-database; `kabipay-database/.env` and/or `kabipay-svc/.env` with POSTGRES_* (and SSL as needed).
 #
-# Example (demo tenant from seed-demo-data / STATUS):
-#   Set-Location D:\work\KabiPay
-#   powershell -ExecutionPolicy Bypass -File .\kabipay-svc\scripts\update-tenant-liquibase.ps1 -Schema tenant_342205fc
+# Example:
+#   Set-Location D:\work\KabiPay\kabipay-svc\scripts
+#   .\update-tenant-liquibase.ps1 -Schema tenant_342205fc
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^tenant_[a-z0-9_]{1,50}$')]
     [string]$Schema,
-    [string]$DbName = 'kabipay_dev',
-    [string]$DbUser = 'kabipay',
-    [string]$DbPassword = 'changeme',
-    [string]$Network = 'kabipay_default'
+    [string]$PostgresHost = '',
+    [int]$PostgresPort = 5432,
+    [string]$DbName = '',
+    [string]$DbUser = '',
+    [string]$DbPassword = '',
+    [switch]$PostgresSsl
 )
 
 $ErrorActionPreference = 'Stop'
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $DatabaseDir = Join-Path $RepoRoot 'kabipay-database'
-if (-not (Test-Path $DatabaseDir)) {
-    throw "kabipay-database not found: $DatabaseDir"
+$RunLb = Join-Path $DatabaseDir 'run-liquibase.cjs'
+$SvcEnv = Join-Path $RepoRoot 'kabipay-svc\.env'
+$DbEnv = Join-Path $DatabaseDir '.env'
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js is required" }
+if (-not (Test-Path $RunLb)) { throw "Missing run-liquibase.cjs — in kabipay-database: npm install" }
+
+function Import-DotEnvFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -match '^\s*#' -or $line -eq '') { return }
+        $i = $line.IndexOf('=')
+        if ($i -lt 1) { return }
+        $k = $line.Substring(0, $i).Trim()
+        $v = $line.Substring($i + 1).Trim()
+        if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }
+        Set-Item -Path "Env:$k" -Value $v
+    }
 }
+
+Import-DotEnvFile -Path $SvcEnv
+Import-DotEnvFile -Path $DbEnv
+
+if ([string]::IsNullOrWhiteSpace($DbName)) { $DbName = $env:POSTGRES_DB }
+if ([string]::IsNullOrWhiteSpace($DbUser)) { $DbUser = $env:POSTGRES_USER }
+if ([string]::IsNullOrWhiteSpace($DbPassword)) { $DbPassword = $env:POSTGRES_PASSWORD }
+if ([string]::IsNullOrWhiteSpace($PostgresHost)) { $PostgresHost = $env:POSTGRES_HOST }
+if (-not $PSBoundParameters.ContainsKey('PostgresPort') -and $env:POSTGRES_PORT) { $PostgresPort = [int]$env:POSTGRES_PORT }
+if ([string]::IsNullOrWhiteSpace($DbName) -or [string]::IsNullOrWhiteSpace($DbUser) -or [string]::IsNullOrWhiteSpace($DbPassword)) {
+    throw "Set DbName, DbUser, DbPassword or configure POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD in kabipay-database/.env or kabipay-svc/.env"
+}
+if ([string]::IsNullOrWhiteSpace($PostgresHost)) { $PostgresHost = 'localhost' }
+$isCloud = ($PostgresHost -ne 'localhost' -and $PostgresHost -ne '127.0.0.1')
+$useSsl = [bool]$PostgresSsl
+if (-not $useSsl -and $isCloud -and $env:POSTGRES_SSLMODE -eq 'require') { $useSsl = $true }
+
+$JdbcHost = $PostgresHost
+$tenantJdbc = "jdbc:postgresql://${JdbcHost}:${PostgresPort}/${DbName}"
+if ($useSsl) { $tenantJdbc += "?sslmode=require" }
 
 $TrackingTable = "${Schema}_databasechangelog"
 $TenantPropsPath = Join-Path $DatabaseDir ".generated-tenant-update-$Schema.properties"
 $TenantProps = @"
 changeLogFile=changelog/tenant.changelog-master.xml
-url=jdbc:postgresql://postgres:5432/$DbName
+url=$tenantJdbc
 username=$DbUser
 password=$DbPassword
 driver=org.postgresql.Driver
@@ -44,9 +84,11 @@ $TenantProps | Set-Content -Path $TenantPropsPath -Encoding ASCII
 try {
     Write-Host "==> Liquibase update for schema $Schema (tracking: $Schema.$TrackingTable)..." -ForegroundColor Cyan
     $TenantPropsRel = [System.IO.Path]::GetFileName($TenantPropsPath)
-    docker run --rm --network $Network -v "${DatabaseDir}:/liquibase/changelog" -w /liquibase/changelog liquibase/liquibase:4.27 `
-        --defaults-file=$TenantPropsRel update
-    if ($LASTEXITCODE -ne 0) { throw "Liquibase update failed (exit $LASTEXITCODE)" }
+    Push-Location $DatabaseDir
+    try {
+        & node $RunLb --defaults-file=$TenantPropsRel update
+        if ($LASTEXITCODE -ne 0) { throw "Liquibase update failed (exit $LASTEXITCODE)" }
+    } finally { Pop-Location }
 } finally {
     Remove-Item -Path $TenantPropsPath -ErrorAction SilentlyContinue
 }

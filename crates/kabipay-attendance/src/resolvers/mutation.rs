@@ -7,7 +7,10 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{AttendanceDto, CreateTimesheetEntryInput, TimesheetEntryDto};
+use crate::resolvers::types::{
+    AddManualAttendanceSegmentInput, AttendanceDto, CreateTimesheetEntryInput, PunchTodayInput,
+    TimesheetEntryDto,
+};
 use crate::services::attendance_service;
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
@@ -22,15 +25,53 @@ impl MutationRoot {
     /// Record a punch: closes the **open** segment (punch in without out) if any, otherwise
     /// starts a **new** segment (new `attendance` row). Multiple in/out pairs per `work_date`
     /// are allowed; there is no “third punch” error.
-    async fn punch_today(&self, ctx: &Context<'_>) -> Result<AttendanceDto> {
+    ///
+    /// When `input` includes **both** `latitude` and `longitude` (WGS84), they are stored on
+    /// `attendance` as punch-in coordinates for a new row, or punch-out coordinates when closing
+    /// an open segment (`check_out_lat` / `check_out_lng` columns).
+    async fn punch_today(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<PunchTodayInput>,
+    ) -> Result<AttendanceDto> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        let m = attendance_service::punch_today(&db, tenant_id, employee_id)
+        let geo = match input {
+            None => None,
+            Some(i) => attendance_service::parse_punch_geo(i.latitude, i.longitude)
+                .map_err(KabiPayError::into_graphql)?,
+        };
+        let m = attendance_service::punch_today(&db, tenant_id, employee_id, geo)
             .await
             .map_err(KabiPayError::into_graphql)?;
+        Ok(AttendanceDto::from(m))
+    }
+
+    /// Add a full **in + out** segment for a `workDate` (no future dates) when the user did not
+    /// punch live — does not modify `punch_today` behaviour.
+    async fn add_manual_attendance_segment(
+        &self,
+        ctx: &Context<'_>,
+        input: AddManualAttendanceSegmentInput,
+    ) -> Result<AttendanceDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let m = attendance_service::add_manual_attendance_segment(
+            &db,
+            tenant_id,
+            employee_id,
+            input.work_date,
+            input.check_in_time,
+            input.check_out_time,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
         Ok(AttendanceDto::from(m))
     }
 
@@ -44,7 +85,8 @@ impl MutationRoot {
         let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        let h = attendance_service::parse_hours(&input.hours_worked).map_err(KabiPayError::into_graphql)?;
+        let h = attendance_service::parse_hours(&input.hours_worked)
+            .map_err(KabiPayError::into_graphql)?;
         let m = attendance_service::create_timesheet_entry(
             &db,
             tenant_id,

@@ -2,7 +2,7 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::{require_tenant_id, resolve_client_employee_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
 use uuid::Uuid;
@@ -31,7 +31,8 @@ impl MutationRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         let category_id = parse_uuid(&input.expense_category_id, "expenseCategoryId")?;
-        let amount = expense_service::parse_amount(&input.amount).map_err(KabiPayError::into_graphql)?;
+        let amount =
+            expense_service::parse_amount(&input.amount).map_err(KabiPayError::into_graphql)?;
         let m = expense_service::submit_expense(
             &db,
             tenant_id,
@@ -44,6 +45,47 @@ impl MutationRoot {
         )
         .await
         .map_err(KabiPayError::into_graphql)?;
+        Ok(ExpenseDto::from(m))
+    }
+
+    async fn approve_expense(&self, ctx: &Context<'_>, expense_id: ID) -> Result<ExpenseDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_approve_expense() {
+            return Err(KabiPayError::Forbidden(
+                "expense approve permission required (expense:approve or HR/tenant admin role)"
+                    .into(),
+            )
+            .into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = parse_uuid(&expense_id, "expenseId")?;
+        let m = expense_service::approve_expense(&db, tenant_id, id, claims.sub)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(ExpenseDto::from(m))
+    }
+
+    async fn reject_expense(
+        &self,
+        ctx: &Context<'_>,
+        expense_id: ID,
+        reason: Option<String>,
+    ) -> Result<ExpenseDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_approve_expense() {
+            return Err(KabiPayError::Forbidden(
+                "expense approve permission required (expense:approve or HR/tenant admin role)"
+                    .into(),
+            )
+            .into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = parse_uuid(&expense_id, "expenseId")?;
+        let m = expense_service::reject_expense(&db, tenant_id, id, reason)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
         Ok(ExpenseDto::from(m))
     }
 }

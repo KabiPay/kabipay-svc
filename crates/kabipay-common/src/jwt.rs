@@ -9,9 +9,7 @@
 //! isolation. Using one secret simplifies key rotation and avoids the
 //! foot-gun of an operator token being accepted by a client subgraph.
 
-use crate::context::{
-    ClientClaims, OperatorClaims, CLIENT_JWT_ISSUER, OPERATOR_JWT_ISSUER,
-};
+use crate::context::{ClientClaims, OperatorClaims, CLIENT_JWT_ISSUER, OPERATOR_JWT_ISSUER};
 use crate::error::{KabiPayError, KabiPayResult};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};

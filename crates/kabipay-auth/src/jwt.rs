@@ -16,6 +16,7 @@ use kabipay_common::{
         jwt_secret_from_env,
     },
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub const ISSUER_OPS: &str = OPERATOR_JWT_ISSUER;
@@ -89,6 +90,9 @@ impl JwtConfig {
         tenant_id: Uuid,
         email: &str,
         employee_id: Option<Uuid>,
+        roles: Vec<String>,
+        permissions: Vec<String>,
+        resource_scopes: HashMap<String, String>,
     ) -> KabiPayResult<String> {
         let now = Utc::now();
         let claims = ClientClaims {
@@ -99,8 +103,9 @@ impl JwtConfig {
             iat: now.timestamp(),
             tenant_id,
             employee_id,
-            roles: Vec::new(),
-            permissions: Vec::new(),
+            roles,
+            permissions,
+            resource_scopes,
         };
         encode_client_jwt(&claims, &self.secret)
     }
@@ -160,7 +165,7 @@ mod tests {
         let user = Uuid::new_v4();
         let tenant = Uuid::new_v4();
         let token = cfg
-            .issue_client_access(user, tenant, "user@example.com", None)
+            .issue_client_access(user, tenant, "user@example.com", None, vec![], vec![], HashMap::new())
             .unwrap();
         let claims = decode_client_jwt(&token, &cfg.secret).unwrap();
         assert_eq!(claims.sub, user);

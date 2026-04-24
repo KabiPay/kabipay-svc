@@ -83,9 +83,9 @@ impl KabiPayError {
         use axum::http::StatusCode as S;
         match self {
             Self::NotFound { .. } | Self::TenantNotFound(_) => S::NOT_FOUND,
-            Self::SeatLimitReached { .. } | Self::ModuleNotSubscribed(_) | Self::TenantSuspended(_) => {
-                S::FORBIDDEN
-            }
+            Self::SeatLimitReached { .. }
+            | Self::ModuleNotSubscribed(_)
+            | Self::TenantSuspended(_) => S::FORBIDDEN,
             Self::Unauthorised | Self::Jwt(_) => S::UNAUTHORIZED,
             Self::Forbidden(_) => S::FORBIDDEN,
             Self::Validation(_) | Self::Json(_) => S::BAD_REQUEST,

@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use kabipay_db_entities::tenant::d0013_tax_statutory::{
     tax_computation, tax_configuration_version, tax_slab,
 };
+use kabipay_db_entities::tenant::d0031_tax_proof::tax_proof_line;
 
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "TaxConfigurationVersion")]
@@ -94,6 +95,58 @@ pub struct UpsertTaxComputationInput {
     pub taxable_income: Option<String>,
     pub final_tax: Option<String>,
     pub tds_per_month: Option<String>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TaxProofLine")]
+pub struct TaxProofLineDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    pub tax_config_version_id: ID,
+    pub fiscal_year: i32,
+    /// e.g. `80C`, `HRA`, `STANDARD`
+    pub section_code: String,
+    pub declared_amount: String,
+    pub actual_amount: String,
+    pub file_storage_id: Option<ID>,
+    pub status: String,
+    pub rejection_reason: Option<String>,
+    pub approved_by: Option<ID>,
+    pub submitted_at: DateTime<Utc>,
+}
+
+impl From<tax_proof_line::Model> for TaxProofLineDto {
+    fn from(m: tax_proof_line::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            tax_config_version_id: ID(m.tax_config_version_id.to_string()),
+            fiscal_year: m.fiscal_year,
+            section_code: m.section_code,
+            declared_amount: m.declared_amount.to_string(),
+            actual_amount: m.actual_amount.to_string(),
+            file_storage_id: m.file_storage_id.map(|u| ID(u.to_string())),
+            status: m.status,
+            rejection_reason: m.rejection_reason,
+            approved_by: m.approved_by.map(|u| ID(u.to_string())),
+            submitted_at: m.submitted_at,
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct SubmitTaxProofLineInput {
+    pub tax_config_version_id: ID,
+    pub fiscal_year: i32,
+    pub section_code: String,
+    /// Declared amount at the start of the year (string decimal).
+    pub declared_amount: String,
+    /// Submitted **actual** from proof (string decimal); must be approved to count in `tax_computation`.
+    pub actual_amount: String,
+    /// Optional `file_storage` id after upload.
+    pub file_storage_id: Option<ID>,
 }
 
 impl From<tax_slab::Model> for TaxSlabDto {
