@@ -1,6 +1,6 @@
 //! GraphQL DTOs for kabipay-analytics.
 
-use async_graphql::{SimpleObject, ID};
+use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 use sea_orm::prelude::Json;
 
@@ -193,4 +193,119 @@ impl From<outbox_event::Model> for OutboxEventDto {
             claimed_at: m.claimed_at,
         }
     }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "IntegrationConnectorCatalogRow")]
+pub struct IntegrationConnectorCatalogDto {
+    pub id: ID,
+    pub name: String,
+    pub code: String,
+    pub category: Option<String>,
+    pub auth_type: Option<String>,
+    pub is_active: bool,
+}
+
+impl From<kabipay_db_entities::ops::integration_connector::Model> for IntegrationConnectorCatalogDto {
+    fn from(m: kabipay_db_entities::ops::integration_connector::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            name: m.name,
+            code: m.code,
+            category: m.category,
+            auth_type: m.auth_type,
+            is_active: m.is_active,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TenantIntegrationRow")]
+pub struct TenantIntegrationDto {
+    pub id: ID,
+    pub integration_connector_id: ID,
+    pub is_active: bool,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<kabipay_db_entities::tenant::d0026_integrations::tenant_integration::Model>
+    for TenantIntegrationDto
+{
+    fn from(m: kabipay_db_entities::tenant::d0026_integrations::tenant_integration::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            integration_connector_id: ID(m.integration_connector_id.to_string()),
+            is_active: m.is_active,
+            connected_at: m.connected_at,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "WebhookSubscriptionRow")]
+pub struct WebhookSubscriptionDto {
+    pub id: ID,
+    pub event_name: String,
+    pub endpoint_url: String,
+    /// Stored as SHA256 hex (`None` when no signing secret configured).
+    pub secret_hash: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<kabipay_db_entities::tenant::d0026_integrations::webhook_subscription::Model>
+    for WebhookSubscriptionDto
+{
+    fn from(m: kabipay_db_entities::tenant::d0026_integrations::webhook_subscription::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            event_name: m.event_name,
+            endpoint_url: m.endpoint_url,
+            secret_hash: m.secret_hash,
+            is_active: m.is_active,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "AuditLogRow")]
+pub struct AuditLogDto {
+    pub id: ID,
+    pub user_id: Option<ID>,
+    pub entity_type: String,
+    pub entity_id: Option<ID>,
+    pub action: String,
+    pub before_json: Option<String>,
+    pub after_json: Option<String>,
+    pub ip_address: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<kabipay_db_entities::tenant::d0027_communication_audit::audit_log::Model> for AuditLogDto {
+    fn from(m: kabipay_db_entities::tenant::d0027_communication_audit::audit_log::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            user_id: m.user_id.map(|u| ID(u.to_string())),
+            entity_type: m.entity_type,
+            entity_id: m.entity_id.map(|u| ID(u.to_string())),
+            action: m.action,
+            before_json: m
+                .before_state
+                .and_then(|j| serde_json::to_string(&j).ok()),
+            after_json: m.after_state.and_then(|j| serde_json::to_string(&j).ok()),
+            ip_address: m.ip_address,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(InputObject)]
+pub struct RegisterWebhookInput {
+    pub event_name: String,
+    pub endpoint_url: String,
+    /// Optional signing secret (**SHA256** stored server-side).
+    pub webhook_secret: Option<String>,
 }

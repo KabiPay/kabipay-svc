@@ -20,6 +20,7 @@ pub mod travel_request {
         pub status: String,
         pub rejection_reason: Option<String>,
         pub approved_by: Option<Uuid>,
+        pub rejected_by: Option<Uuid>,
         pub submitted_at: DateTimeUtc,
         pub created_at: DateTimeUtc,
         pub updated_at: DateTimeUtc,

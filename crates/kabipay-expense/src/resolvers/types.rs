@@ -76,6 +76,9 @@ pub struct TravelRequestDto {
     pub estimated_amount: Option<String>,
     pub currency: String,
     pub status: String,
+    pub rejection_reason: Option<String>,
+    pub approved_by: Option<ID>,
+    pub rejected_by: Option<ID>,
     pub submitted_at: DateTime<Utc>,
 }
 
@@ -105,6 +108,9 @@ impl From<kabipay_db_entities::tenant::d0033_travel_request::travel_request::Mod
             estimated_amount: m.estimated_amount.map(|d| d.to_string()),
             currency: m.currency,
             status: m.status,
+            rejection_reason: m.rejection_reason,
+            approved_by: m.approved_by.map(|u| ID(u.to_string())),
+            rejected_by: m.rejected_by.map(|u| ID(u.to_string())),
             submitted_at: m.submitted_at,
         }
     }

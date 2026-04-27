@@ -83,6 +83,7 @@ pub async fn submit_travel_request(
         status: Set(STATUS_PENDING.into()),
         rejection_reason: Set(None),
         approved_by: Set(None),
+        rejected_by: Set(None),
         submitted_at: Set(now),
         created_at: Set(now),
         updated_at: Set(now),
@@ -106,6 +107,7 @@ pub async fn approve_travel_request(
     am.status = Set(STATUS_APPROVED.into());
     am.rejection_reason = Set(None);
     am.approved_by = Set(Some(approver_user_id));
+    am.rejected_by = Set(None);
     am.updated_at = Set(now);
     am.update(db).await?;
     let out = travel_request::Entity::find_by_id(travel_request_id)
@@ -127,6 +129,7 @@ pub async fn reject_travel_request(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     travel_request_id: Uuid,
+    rejector_user_id: Uuid,
     rejection_reason: Option<String>,
 ) -> KabiPayResult<travel_request::Model> {
     let model = load_pending_travel(db, tenant_id, travel_request_id).await?;
@@ -135,6 +138,7 @@ pub async fn reject_travel_request(
     am.status = Set(STATUS_REJECTED.into());
     am.rejection_reason = Set(rejection_reason.clone());
     am.approved_by = Set(None);
+    am.rejected_by = Set(Some(rejector_user_id));
     am.updated_at = Set(now);
     am.update(db).await?;
     let out = travel_request::Entity::find_by_id(travel_request_id)

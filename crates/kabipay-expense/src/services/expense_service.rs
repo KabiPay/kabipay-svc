@@ -10,6 +10,7 @@ use kabipay_db_entities::tenant::d0025_workflow::{
 };
 use kabipay_db_entities::tenant::d0033_travel_request::travel_request;
 use kabipay_db_entities::tenant::d0027_communication_audit::notification;
+use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
 use rust_decimal::Decimal;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
@@ -228,7 +229,10 @@ const STATUS_PENDING: &str = "PENDING";
 const STATUS_APPROVED: &str = "APPROVED";
 const STATUS_REJECTED: &str = "REJECTED";
 
-/// Mark expense **APPROVED** + notify (**M32:** only after final workflow step, or legacy no-workflow approve).
+/// Matches **`outbox_event.status`** (`PENDING` until worker processes — **M7**).
+const OUTBOX_STATUS_PENDING: &str = "PENDING";
+
+/// Mark expense **APPROVED**, enqueue **`outbox_event`** (**M33 / Gap G**, same transaction as leave **M6**).
 async fn finalize_expense_approval(
     txn: &impl ConnectionTrait,
     tenant_id: Uuid,
@@ -251,12 +255,41 @@ async fn finalize_expense_approval(
     am.approved_by = Set(Some(approver_user_id));
     am.updated_at = Set(now);
     am.update(txn).await?;
-    expense::Entity::find()
+    let out = expense::Entity::find()
         .filter(expense::Column::Id.eq(expense_id))
         .filter(expense::Column::TenantId.eq(tenant_id))
         .one(txn)
         .await?
-        .ok_or_else(|| KabiPayError::Internal("updated expense not found".into()))
+        .ok_or_else(|| KabiPayError::Internal("updated expense not found".into()))?;
+
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "expense_id": out.id,
+        "employee_id": out.employee_id,
+        "expense_category_id": out.expense_category_id,
+        "approver_user_id": approver_user_id,
+        "amount": out.amount.normalize().to_string(),
+        "currency": out.currency,
+        "expense_date": out.expense_date.to_string(),
+        "status": out.status,
+        "title": out.title,
+    });
+    let ob = outbox_event::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        tenant_id: Set(tenant_id),
+        aggregate_type: Set("expense".into()),
+        aggregate_id: Set(expense_id),
+        event_type: Set("expense.approved".into()),
+        payload: Set(payload.into()),
+        status: Set(OUTBOX_STATUS_PENDING.into()),
+        retry_count: Set(0),
+        last_error: Set(None),
+        created_at: Set(now),
+        processed_at: Set(None),
+        claimed_at: Set(None),
+    };
+    ob.insert(txn).await.map_err(KabiPayError::from)?;
+    Ok(out)
 }
 
 /// Approve routing: **`workflow_instance`** multi-step (**M32**) — intermediate steps advance the
