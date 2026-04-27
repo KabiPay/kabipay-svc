@@ -1,6 +1,7 @@
 //! GraphQL DTOs for kabipay-payroll.
 
-use async_graphql::{SimpleObject, ID};
+use async_graphql::{InputObject, SimpleObject, ID};
+use kabipay_db_entities::tenant::d0035_payroll_arrear::payroll_arrear;
 use chrono::{DateTime, NaiveDate, Utc};
 use kabipay_db_entities::tenant::d0012_payroll::{
     payroll_cycle, payslip, payslip_component, salary_component,
@@ -149,4 +150,59 @@ impl From<payroll_cycle::Model> for PayrollCycleDto {
             updated_at: m.updated_at,
         }
     }
+}
+
+/// PENDING or APPLIED back-pay / correction accrual; applied on a pay run as an `ARREAR` line.
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "PayrollArrear")]
+pub struct PayrollArrearDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    /// Decimal as string
+    pub amount: String,
+    pub reason: Option<String>,
+    pub status: String,
+    pub applied_payroll_cycle_id: Option<ID>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<payroll_arrear::Model> for PayrollArrearDto {
+    fn from(m: payroll_arrear::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            amount: m.amount.to_string(),
+            reason: m.reason,
+            status: m.status,
+            applied_payroll_cycle_id: m
+                .applied_payroll_cycle_id
+                .map(|u| ID(u.to_string())),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+/// Create a `PENDING` arrear; paid out on the next pay run that includes the employee.
+#[derive(InputObject, Clone, Debug)]
+pub struct CreatePayrollArrearInput {
+    pub employee_id: ID,
+    /// Decimal string, e.g. "5000.00"
+    pub amount: String,
+    pub reason: Option<String>,
+}
+
+/// Create a new tenant payroll period row (`DRAFT`). One cycle per (tenant, month, year) in v1.
+#[derive(InputObject, Clone, Debug)]
+pub struct CreatePayrollCycleInput {
+    /// Display label, e.g. "April 2026 payroll"
+    pub name: String,
+    /// Calendar month 1–12
+    pub month: i32,
+    pub year: i32,
+    /// Optional pay-out date
+    pub payment_date: Option<NaiveDate>,
 }

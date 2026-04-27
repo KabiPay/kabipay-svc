@@ -65,6 +65,7 @@ pub mod expense {
         pub expense_date: NaiveDate,
         pub title: String,
         pub status: String,
+        pub travel_request_id: Option<Uuid>,
         pub rejection_reason: Option<String>,
         pub approved_by: Option<Uuid>,
         pub workflow_instance_id: Option<Uuid>,

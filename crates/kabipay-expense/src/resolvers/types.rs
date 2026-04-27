@@ -37,6 +37,8 @@ pub struct ExpenseDto {
     pub tenant_id: ID,
     pub employee_id: ID,
     pub expense_category_id: ID,
+    /// When set, this claim is part of a travel trip.
+    pub travel_request_id: Option<ID>,
     pub amount: String,
     pub currency: String,
     pub expense_date: NaiveDate,
@@ -54,6 +56,8 @@ pub struct SubmitExpenseInput {
     pub currency: String,
     pub expense_date: NaiveDate,
     pub title: String,
+    /// Link to a travel request the employee owns (optional).
+    pub travel_request_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -111,6 +115,7 @@ impl From<expense::Model> for ExpenseDto {
             tenant_id: ID(m.tenant_id.to_string()),
             employee_id: ID(m.employee_id.to_string()),
             expense_category_id: ID(m.expense_category_id.to_string()),
+            travel_request_id: m.travel_request_id.map(|u| ID(u.to_string())),
             amount: m.amount.to_string(),
             currency: m.currency,
             expense_date: m.expense_date,

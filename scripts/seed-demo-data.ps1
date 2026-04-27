@@ -15,7 +15,7 @@
         0000 foundation   : department, designation, user, employee (original demo)
         0010 shift/attend : shift (DAY/NIGHT), attendance for today
         0011 leave        : leave_type (CL/SL), leave_request (PENDING)
-        0012 payroll      : salary_component (BASIC/HRA), payroll_cycle (current month), demo payslip + TDS
+        0012 payroll      : salary_component (BASIC/HRA/ARREAR), payroll_cycle (current month), demo payslip + TDS
         0013 tax          : tax_configuration_version, tax_slab x 2
         0014 benefits     : benefit_type, benefit_plan
         0015 expense      : expense_category, expense (PENDING)
@@ -178,9 +178,11 @@ $LeaveRequest1Id     = New-DeterministicUuid -Seed "${Schema}:leave_request:1"
 # Payroll (0012)
 $SalaryCompBasicId   = New-DeterministicUuid -Seed "${Schema}:salary_component:basic"
 $SalaryCompHraId     = New-DeterministicUuid -Seed "${Schema}:salary_component:hra"
+$SalaryCompArrearId  = New-DeterministicUuid -Seed "${Schema}:salary_component:arrear"
 $PayrollCycleId      = New-DeterministicUuid -Seed "${Schema}:payroll_cycle:current"
 $PayslipDemoId       = New-DeterministicUuid -Seed "${Schema}:payslip:demo"
 $EmployeePanId       = New-DeterministicUuid -Seed "${Schema}:employee_pan:demo"
+$EmploymentHistoryDemoId = New-DeterministicUuid -Seed "${Schema}:employment_history:demo"
 
 # Tax (0013)
 $TaxConfigId         = New-DeterministicUuid -Seed "${Schema}:tax_config:fy2026"
@@ -325,6 +327,12 @@ INSERT INTO "$Schema".employee_pan (
     '$EmployeePanId', '$TenantId', '$EmployeeId', 'ABCDE1234F', true, false
 ) ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".employment_history (
+    id, tenant_id, employee_id, salary, effective_from, is_deleted
+) VALUES (
+    '$EmploymentHistoryDemoId', '$TenantId', '$EmployeeId', 85000.0000, CURRENT_DATE - INTERVAL '1 year', false
+) ON CONFLICT (id) DO NOTHING;
+
 -- RBAC: demo user can create/update employees (JWT permissions loaded at login)
 INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
 VALUES ('$RoleHrAdminId', '$TenantId', 'HR_ADMIN', 'Employee directory admin', true, false)
@@ -439,8 +447,9 @@ $SqlPayroll = @"
 INSERT INTO "$Schema".salary_component (
     id, tenant_id, name, code, type, is_taxable, is_fixed, is_active
 ) VALUES
-    ('$SalaryCompBasicId', '$TenantId', 'Basic',             'BASIC', 'EARNING', true, true, true),
-    ('$SalaryCompHraId',   '$TenantId', 'House Rent Allow.', 'HRA',   'EARNING', true, true, true)
+    ('$SalaryCompBasicId',  '$TenantId', 'Basic',                'BASIC',  'EARNING', true, true, true),
+    ('$SalaryCompHraId',    '$TenantId', 'House Rent Allow.',    'HRA',    'EARNING', true, true, true),
+    ('$SalaryCompArrearId', '$TenantId', 'Arrear & adjustments', 'ARREAR', 'EARNING', true, true, true)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".payroll_cycle (

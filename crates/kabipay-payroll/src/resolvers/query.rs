@@ -11,10 +11,11 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{PayrollCycleDto, PayslipDetailDto, SalaryComponentDto};
+use crate::resolvers::types::{PayrollArrearDto, PayrollCycleDto, PayslipDetailDto, SalaryComponentDto};
+use crate::services::arrear_service;
 use crate::services::payroll_service;
 
-fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
+pub(crate) fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
         .map_err(|e| KabiPayError::Validation(format!("invalid {field}: {e}")).into_graphql())
 }
@@ -169,5 +170,55 @@ impl QueryRoot {
         payroll_service::india_pf_esi_monthly_summary_csv(&db, tenant_id, month, year)
             .await
             .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **Payroll — bank transfer list (CSV).** Net pay and primary `employee_bank` for each payslip
+    /// in the cycle for `month` + `year`. Same RBAC as India statutory exports; not a specific bank’s
+    /// upload file format.
+    async fn payroll_bank_transfer_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll bank transfer export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::payroll_bank_transfer_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// `PENDING` payroll arrear accruals (oldest first by `createdAt` desc in service order). HR / statutory export role.
+    async fn payroll_arrears(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<PayrollArrearDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll arrear list requires payroll:statutory_export or HR / tenant admin"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = arrear_service::list_pending_tenant(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(PayrollArrearDto::from).collect())
     }
 }

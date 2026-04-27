@@ -2,7 +2,7 @@
 
 use async_graphql::{SimpleObject, ID};
 use chrono::{DateTime, Utc};
-use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_instance};
+use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_instance, workflow_step};
 
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "Workflow")]
@@ -58,4 +58,47 @@ impl From<workflow_instance::Model> for WorkflowInstanceDto {
             completed_at: m.completed_at,
         }
     }
+}
+
+/// One node in a workflow graph (read-only; editing is a future “designer”).
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "WorkflowStep")]
+pub struct WorkflowStepDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub workflow_id: ID,
+    pub sequence_order: i32,
+    pub step_name: String,
+    pub approver_type: Option<String>,
+    pub approver_role_id: Option<ID>,
+    pub can_skip: bool,
+    pub sla_hours: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<workflow_step::Model> for WorkflowStepDto {
+    fn from(m: workflow_step::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            workflow_id: ID(m.workflow_id.to_string()),
+            sequence_order: m.sequence_order,
+            step_name: m.step_name,
+            approver_type: m.approver_type,
+            approver_role_id: m.approver_role_id.map(|u| ID(u.to_string())),
+            can_skip: m.can_skip,
+            sla_hours: m.sla_hours,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+/// Workflow definition + ordered steps (for a designer-style board).
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "WorkflowWithSteps")]
+pub struct WorkflowWithStepsDto {
+    pub workflow: WorkflowDto,
+    pub steps: Vec<WorkflowStepDto>,
 }

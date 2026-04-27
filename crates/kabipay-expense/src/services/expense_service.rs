@@ -5,6 +5,7 @@ use kabipay_common::client_data_scope::EmployeeScopeFilter;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use kabipay_db_entities::tenant::d0015_expense::{expense, expense_category};
+use kabipay_db_entities::tenant::d0033_travel_request::travel_request;
 use kabipay_db_entities::tenant::d0027_communication_audit::notification;
 use rust_decimal::Decimal;
 use sea_orm::{
@@ -56,6 +57,7 @@ pub async fn list_expenses(
 }
 
 /// Submit a new expense claim in `PENDING` status; validates category belongs to the tenant.
+/// Optional `travel_request_id` links the claim to that employee’s trip.
 pub async fn submit_expense(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -65,6 +67,7 @@ pub async fn submit_expense(
     currency: &str,
     expense_date: NaiveDate,
     title: &str,
+    travel_request_id: Option<Uuid>,
 ) -> KabiPayResult<expense::Model> {
     let _cat = expense_category::Entity::find()
         .filter(expense_category::Column::Id.eq(expense_category_id))
@@ -81,6 +84,22 @@ pub async fn submit_expense(
             "amount must be greater than zero".into(),
         ));
     }
+    if let Some(tid) = travel_request_id {
+        let t = travel_request::Entity::find()
+            .filter(travel_request::Column::Id.eq(tid))
+            .filter(travel_request::Column::TenantId.eq(tenant_id))
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::NotFound {
+                entity: "travel_request",
+                id: tid.to_string(),
+            })?;
+        if t.employee_id != employee_id {
+            return Err(KabiPayError::Validation(
+                "travel request must belong to the submitting employee".into(),
+            ));
+        }
+    }
     let id = Uuid::new_v4();
     let now = Utc::now();
     let am = expense::ActiveModel {
@@ -93,6 +112,7 @@ pub async fn submit_expense(
         expense_date: Set(expense_date),
         title: Set(title.to_string()),
         status: Set("PENDING".into()),
+        travel_request_id: Set(travel_request_id),
         rejection_reason: Set(None),
         approved_by: Set(None),
         workflow_instance_id: Set(None),

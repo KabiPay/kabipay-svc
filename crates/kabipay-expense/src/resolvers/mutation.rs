@@ -33,6 +33,11 @@ impl MutationRoot {
         let category_id = parse_uuid(&input.expense_category_id, "expenseCategoryId")?;
         let amount =
             expense_service::parse_amount(&input.amount).map_err(KabiPayError::into_graphql)?;
+        let opt_travel = if let Some(tid) = &input.travel_request_id {
+            Some(parse_uuid(tid, "travelRequestId")?)
+        } else {
+            None
+        };
         let m = expense_service::submit_expense(
             &db,
             tenant_id,
@@ -42,6 +47,7 @@ impl MutationRoot {
             &input.currency,
             input.expense_date,
             &input.title,
+            opt_travel,
         )
         .await
         .map_err(KabiPayError::into_graphql)?;
