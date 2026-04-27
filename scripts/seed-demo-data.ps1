@@ -30,7 +30,7 @@
         0022 assets       : asset_category, asset
         0023 grievance    : grievance_category, grievance_case
         0033 travel       : travel_request (PENDING, demo employee)
-        0025 workflow     : workflow, workflow_instance
+        0025 workflow     : workflow, workflow_instance (LEAVE + EXPENSE defs, M32)
         0027 comm/audit   : announcement, notification
 
       Ops plane (kabipay_ops):
