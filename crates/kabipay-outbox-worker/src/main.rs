@@ -1,6 +1,6 @@
 //! Polls tenant `outbox_event` rows (`PENDING`), claims with `FOR UPDATE SKIP LOCKED`,
-//! delivers (structured log + optional HTTP webhook), then marks `PROCESSED` or
-//! `FAILED` / requeues with backoff fields.
+//! delivers to each active `webhook_subscription` (event filter or `*`), then optional
+//! global `OUTBOX_WEBHOOK_URL`, then marks `PROCESSED` or `FAILED` / requeues with backoff.
 
 use anyhow::Context;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -9,10 +9,11 @@ use kabipay_common::load_dotenv;
 use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
 use kabipay_common::telemetry::init_tracing;
 use kabipay_db_entities::ops::tenant_database;
+use kabipay_db_entities::tenant::d0026_integrations::{webhook_delivery_log, webhook_subscription};
 use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
-    FromQueryResult, QueryFilter, Set, Statement, TransactionTrait,
+    FromQueryResult, QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -73,6 +74,82 @@ fn webhook_url() -> Option<String> {
     } else {
         Some(t.to_string())
     }
+}
+
+fn skip_tenant_webhook_subscriptions() -> bool {
+    matches!(
+        std::env::var("OUTBOX_SKIP_TENANT_WEBHOOKS")
+            .as_deref()
+            .unwrap_or("0"),
+        "1" | "true" | "yes"
+    )
+}
+
+fn subscription_matches_event(filter: &str, event_type: &str) -> bool {
+    let f = filter.trim();
+    f == "*" || f.eq_ignore_ascii_case(event_type)
+}
+
+fn build_delivery_body(model: &outbox_event::Model) -> serde_json::Value {
+    json!({
+        "schema_version": 1,
+        "outbox_id": model.id,
+        "tenant_id": model.tenant_id,
+        "aggregate_type": model.aggregate_type,
+        "aggregate_id": model.aggregate_id,
+        "event_type": model.event_type,
+        "payload": model.payload,
+        "created_at": model.created_at,
+    })
+}
+
+async fn post_delivery_json(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> anyhow::Result<(u16, String)> {
+    let res = client
+        .post(url)
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("webhook POST {url}"))?;
+    let status = res.status().as_u16();
+    let text = res.text().await.unwrap_or_default();
+    Ok((status, text))
+}
+
+async fn record_webhook_delivery(
+    tenant_db: &DatabaseConnection,
+    tenant_id: Uuid,
+    subscription_id: Uuid,
+    event_type: &str,
+    payload: &serde_json::Value,
+    http_status: Option<i32>,
+    response_body: &str,
+    is_success: bool,
+    attempt_no: i32,
+) -> anyhow::Result<()> {
+    let log_id = Uuid::new_v4();
+    let now = Utc::now();
+    let mut body_snippet = response_body.to_string();
+    if body_snippet.len() > 4000 {
+        body_snippet = format!("{}…", &body_snippet[..3997]);
+    }
+    let am = webhook_delivery_log::ActiveModel {
+        id: Set(log_id),
+        tenant_id: Set(tenant_id),
+        webhook_subscription_id: Set(subscription_id),
+        event_name: Set(Some(event_type.to_string())),
+        payload_json: Set(Some(payload.clone().into())),
+        http_status: Set(http_status),
+        response_body: Set(Some(body_snippet)),
+        is_success: Set(is_success),
+        attempt_number: Set(attempt_no),
+        delivered_at: Set(now),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    am.insert(tenant_db)
+        .await
+        .with_context(|| format!("insert webhook_delivery_log {}", log_id))?;
+    Ok(())
 }
 
 async fn active_tenant_ids(ops: &DatabaseConnection) -> anyhow::Result<Vec<Uuid>> {
@@ -186,7 +263,7 @@ async fn mark_failure(
     Ok(())
 }
 
-async fn deliver_event(model: &outbox_event::Model) -> anyhow::Result<()> {
+async fn deliver_event(tenant_db: &DatabaseConnection, model: &outbox_event::Model) -> anyhow::Result<()> {
     tracing::info!(
         tenant_id = %model.tenant_id,
         outbox_id = %model.id,
@@ -196,31 +273,85 @@ async fn deliver_event(model: &outbox_event::Model) -> anyhow::Result<()> {
         retry_count = model.retry_count,
         "outbox deliver"
     );
+    let body = build_delivery_body(model);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("reqwest client")?;
+    let attempt_no = model.retry_count + 1;
+
+    // Tenant-configured webhook endpoints (insights → registerWebhookSubscription).
+    if !skip_tenant_webhook_subscriptions() {
+        let subs = webhook_subscription::Entity::find()
+            .filter(webhook_subscription::Column::TenantId.eq(model.tenant_id))
+            .filter(webhook_subscription::Column::IsActive.eq(true))
+            .order_by_asc(webhook_subscription::Column::CreatedAt)
+            .all(tenant_db)
+            .await
+            .with_context(|| "list webhook_subscription")?;
+
+        let et = model.event_type.as_str();
+        for sub in subs {
+            if !subscription_matches_event(&sub.event_name, et) {
+                continue;
+            }
+            let endpoint = sub.endpoint_url.trim();
+            if endpoint.is_empty() {
+                tracing::warn!(subscription_id = %sub.id, "webhook_subscription empty endpoint_url; skip");
+                continue;
+            }
+            match post_delivery_json(&client, endpoint, &body).await {
+                Ok((status, text)) => {
+                    let ok = status >= 200 && status < 300;
+                    if let Err(e) = record_webhook_delivery(
+                        tenant_db,
+                        model.tenant_id,
+                        sub.id,
+                        et,
+                        &body,
+                        Some(status as i32),
+                        &text,
+                        ok,
+                        attempt_no,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "webhook_delivery_log insert failed (delivery already attempted)");
+                    }
+                    if !ok {
+                        anyhow::bail!("tenant webhook {endpoint} returned HTTP {status}: {}", text.chars().take(500).collect::<String>());
+                    }
+                }
+                Err(e) => {
+                    let _ = record_webhook_delivery(
+                        tenant_db,
+                        model.tenant_id,
+                        sub.id,
+                        et,
+                        &body,
+                        None,
+                        &e.to_string(),
+                        false,
+                        attempt_no,
+                    )
+                    .await;
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     if let Some(url) = webhook_url() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .context("reqwest client")?;
-        let body = json!({
-            "schema_version": 1,
-            "outbox_id": model.id,
-            "tenant_id": model.tenant_id,
-            "aggregate_type": model.aggregate_type,
-            "aggregate_id": model.aggregate_id,
-            "event_type": model.event_type,
-            "payload": model.payload,
-            "created_at": model.created_at,
-        });
         let res = client
             .post(&url)
             .json(&body)
             .send()
             .await
-            .context("webhook POST")?;
+            .context("global OUTBOX_WEBHOOK_URL POST")?;
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().await.unwrap_or_default();
-            anyhow::bail!("webhook returned {status}: {text}");
+            anyhow::bail!("OUTBOX_WEBHOOK_URL returned {status}: {text}");
         }
     }
     Ok(())
@@ -275,7 +406,7 @@ async fn process_tenant_outbox(
     let mut n = 0;
     while let Some(ev) = claim_next_pending(tenant_db, tenant_id).await? {
         n += 1;
-        match deliver_event(&ev).await {
+        match deliver_event(tenant_db, &ev).await {
             Ok(()) => mark_processed(tenant_db, ev.id).await?,
             Err(e) => {
                 tracing::warn!(
@@ -309,7 +440,8 @@ async fn main() -> anyhow::Result<()> {
         max_retries = cap,
         stale_processing_sec = stale_processing_duration().as_secs(),
         legacy_processing_max_sec = legacy_null_claimed_max_age().as_secs(),
-        webhook = webhook_url().is_some(),
+        global_webhook = webhook_url().is_some(),
+        skip_tenant_webhooks = skip_tenant_webhook_subscriptions(),
         "outbox worker started"
     );
 
