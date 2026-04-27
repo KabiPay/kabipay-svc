@@ -6,7 +6,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::entities::d0006_org_hierarchy::{department, designation};
 use crate::entities::d0007_employee_core::employee;
 use crate::entities::d0008_document_system::{document_type, employee_document};
-use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
+use crate::entities::d0017_onboarding_offboarding::{
+    clearance_checklist, fnf_settlement, onboarding_checklist, separation,
+};
 
 /// Federated `Employee` type. `id` is the canonical cross-service identifier (Gap A).
 #[derive(SimpleObject, Clone, Debug)]
@@ -204,6 +206,132 @@ pub struct UpdateEmployeeInput {
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<ID>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "Separation")]
+pub struct SeparationDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    pub separation_type: String,
+    pub resignation_date: Option<NaiveDate>,
+    pub last_working_date: NaiveDate,
+    pub reason: Option<String>,
+    pub status: String,
+    pub approved_by: Option<ID>,
+    pub workflow_instance_id: Option<ID>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<separation::Model> for SeparationDto {
+    fn from(m: separation::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            separation_type: m.separation_type,
+            resignation_date: m.resignation_date,
+            last_working_date: m.last_working_date,
+            reason: m.reason,
+            status: m.status,
+            approved_by: m.approved_by.map(|u| ID(u.to_string())),
+            workflow_instance_id: m.workflow_instance_id.map(|u| ID(u.to_string())),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "FnfSettlement")]
+pub struct FnfSettlementDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub separation_id: ID,
+    pub leave_encashment: Option<String>,
+    pub gratuity_amount: Option<String>,
+    pub bonus_payable: Option<String>,
+    pub recovery_amount: Option<String>,
+    pub net_payable: Option<String>,
+    pub status: String,
+    pub processed_at: Option<DateTime<Utc>>,
+    pub processed_by: Option<ID>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<fnf_settlement::Model> for FnfSettlementDto {
+    fn from(m: fnf_settlement::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            separation_id: ID(m.separation_id.to_string()),
+            leave_encashment: m.leave_encashment.map(|d| d.to_string()),
+            gratuity_amount: m.gratuity_amount.map(|d| d.to_string()),
+            bonus_payable: m.bonus_payable.map(|d| d.to_string()),
+            recovery_amount: m.recovery_amount.map(|d| d.to_string()),
+            net_payable: m.net_payable.map(|d| d.to_string()),
+            status: m.status,
+            processed_at: m.processed_at,
+            processed_by: m.processed_by.map(|u| ID(u.to_string())),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "ClearanceChecklistItem")]
+pub struct ClearanceChecklistItemDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub separation_id: ID,
+    pub department: String,
+    pub task_name: String,
+    pub is_cleared: bool,
+    pub cleared_by: Option<ID>,
+    pub cleared_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<clearance_checklist::Model> for ClearanceChecklistItemDto {
+    fn from(m: clearance_checklist::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            separation_id: ID(m.separation_id.to_string()),
+            department: m.department,
+            task_name: m.task_name,
+            is_cleared: m.is_cleared,
+            cleared_by: m.cleared_by.map(|u| ID(u.to_string())),
+            cleared_at: m.cleared_at,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct SubmitSeparationInput {
+    /// When omitted, the JWT-linked employee is used (self-service exit request).
+    pub employee_id: Option<ID>,
+    pub separation_type: String,
+    pub resignation_date: Option<NaiveDate>,
+    pub last_working_date: NaiveDate,
+    pub reason: Option<String>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertFnfSettlementInput {
+    pub separation_id: ID,
+    /// Decimal as string, e.g. "12500.50". Omit or empty to clear.
+    pub leave_encashment: Option<String>,
+    pub gratuity_amount: Option<String>,
+    pub bonus_payable: Option<String>,
+    pub recovery_amount: Option<String>,
 }
 
 #[derive(InputObject, Clone, Debug)]

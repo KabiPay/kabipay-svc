@@ -23,6 +23,7 @@ members = [
     "crates/kabipay-grievance",
     "crates/kabipay-workflow",
     "crates/kabipay-notification",
+    "crates/kabipay-analytics",
     "crates/kabipay-outbox-worker",
 ]
 

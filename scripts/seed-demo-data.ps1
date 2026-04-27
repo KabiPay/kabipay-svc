@@ -25,6 +25,8 @@
         0019 lms          : skill, course
         0020 succession   : competency, talent_pool
         0021 compensation : salary_band, compensation_review_cycle
+        0024 analytics     : report_definition, dashboard, dashboard_widget, report_schedule, workforce_snapshot
+        0030 outbox         : outbox_event (sample rows for Insights event queue; HR-gated in API)
         0022 assets       : asset_category, asset
         0023 grievance    : grievance_category, grievance_case
         0033 travel       : travel_request (PENDING, demo employee)
@@ -227,6 +229,17 @@ $AssetId             = New-DeterministicUuid -Seed "${Schema}:asset:mbp-01"
 # Grievance (0023)
 $GrievCategoryId     = New-DeterministicUuid -Seed "${Schema}:grievance_category:hr"
 $GrievCaseId         = New-DeterministicUuid -Seed "${Schema}:grievance_case:1"
+
+# Analytics (0024)
+$ReportDefId         = New-DeterministicUuid -Seed "${Schema}:report_def:headcount"
+$ReportSchedId       = New-DeterministicUuid -Seed "${Schema}:report_schedule:monthly"
+$DashId              = New-DeterministicUuid -Seed "${Schema}:dashboard:hr"
+$DashWidgetId        = New-DeterministicUuid -Seed "${Schema}:dashboard_widget:1"
+$WorkforceSnapId     = New-DeterministicUuid -Seed "${Schema}:workforce_snapshot:current"
+
+# Outbox (0030) — demo rows for analytics subgraph list_outbox / Insights UI
+$OutboxEventProcId   = New-DeterministicUuid -Seed "${Schema}:outbox:demo_processed"
+$OutboxEventPendId   = New-DeterministicUuid -Seed "${Schema}:outbox:demo_pending"
 
 # Workflow (0025)
 $WorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:leave-approval"
@@ -690,6 +703,65 @@ INSERT INTO "$Schema".grievance_case (
 Invoke-TenantSql -Label "0023 grievance (category + case)" -Sql $SqlGrievance
 
 # =====================================================================
+# 14b. ANALYTICS (0024) — report, dashboard, snapshot
+# =====================================================================
+$SqlAnalytics = @"
+INSERT INTO "$Schema".report_definition (
+    id, tenant_id, name, entity_type, filters_json, columns_json, chart_type, is_public, created_by
+) VALUES (
+    '$ReportDefId', '$TenantId', 'Active headcount by department', 'EMPLOYEE',
+    '{}'::jsonb, '[]'::jsonb, 'BAR', true, NULL
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".dashboard (
+    id, tenant_id, name, description, is_default, created_by
+) VALUES (
+    '$DashId', '$TenantId', 'HR overview', 'Workforce and hiring snapshot', true, NULL
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".dashboard_widget (
+    id, tenant_id, dashboard_id, report_definition_id, widget_type, title, grid_col, grid_row, col_span, row_span
+) VALUES (
+    '$DashWidgetId', '$TenantId', '$DashId', '$ReportDefId', 'CHART', 'Headcount', 0, 0, 2, 1
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".report_schedule (
+    id, tenant_id, report_definition_id, frequency, is_active, recipients_json, delivery_format
+) VALUES (
+    '$ReportSchedId', '$TenantId', '$ReportDefId', 'MONTHLY', true, '[]'::jsonb, 'CSV'
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workforce_snapshot (
+    id, tenant_id, snapshot_date,
+    total_headcount, active_employees, new_joiners, separations, open_positions,
+    average_tenure_months, attrition_rate
+) VALUES (
+    '$WorkforceSnapId', '$TenantId', CURRENT_DATE,
+    1, 1, 0, 0, 1, 24.0000, 0.0000
+) ON CONFLICT (tenant_id, snapshot_date) DO NOTHING;
+"@
+Invoke-TenantSql -Label "0024 analytics (report, dashboard, schedule, snapshot)" -Sql $SqlAnalytics
+
+# =====================================================================
+# 14c. OUTBOX (0030) — sample events for Insights "Event queue" (requires HR to view in API)
+# =====================================================================
+$SqlOutbox = @"
+INSERT INTO "$Schema".outbox_event (
+    id, tenant_id, aggregate_type, aggregate_id, event_type, payload, status, retry_count, last_error, created_at, processed_at, claimed_at
+) VALUES (
+    '$OutboxEventProcId', '$TenantId', 'LEAVE_REQUEST', '$LeaveRequest1Id', 'LEAVE_STATUS_CHANGED',
+    '{"demo":true,"note":"Seeded for UI"}'::jsonb, 'PROCESSED', 0, NULL, NOW() - interval '2 hours', NOW() - interval '1 hour', NULL
+) ON CONFLICT (id) DO NOTHING;
+INSERT INTO "$Schema".outbox_event (
+    id, tenant_id, aggregate_type, aggregate_id, event_type, payload, status, retry_count, last_error, created_at, processed_at, claimed_at
+) VALUES (
+    '$OutboxEventPendId', '$TenantId', 'EMPLOYEE', '$EmployeeId', 'DEMO_PING',
+    '{}'::jsonb, 'PENDING', 0, NULL, NOW(), NULL, NULL
+) ON CONFLICT (id) DO NOTHING;
+"@
+Invoke-TenantSql -Label "0030 outbox (demo events for event queue tab)" -Sql $SqlOutbox
+
+# =====================================================================
 # 15. WORKFLOW (0025)
 # =====================================================================
 $SqlWorkflow = @"
@@ -845,6 +917,9 @@ UNION ALL SELECT 'tenant.skill',              COUNT(*) FROM "$Schema".skill
 UNION ALL SELECT 'tenant.course',             COUNT(*) FROM "$Schema".course
 UNION ALL SELECT 'tenant.competency',         COUNT(*) FROM "$Schema".competency
 UNION ALL SELECT 'tenant.talent_pool',        COUNT(*) FROM "$Schema".talent_pool
+UNION ALL SELECT 'tenant.report_definition',  COUNT(*) FROM "$Schema".report_definition
+UNION ALL SELECT 'tenant.workforce_snapshot',  COUNT(*) FROM "$Schema".workforce_snapshot
+UNION ALL SELECT 'tenant.outbox_event',         COUNT(*) FROM "$Schema".outbox_event
 UNION ALL SELECT 'tenant.salary_band',        COUNT(*) FROM "$Schema".salary_band
 UNION ALL SELECT 'tenant.comp_review_cycle',  COUNT(*) FROM "$Schema".compensation_review_cycle
 UNION ALL SELECT 'tenant.asset',              COUNT(*) FROM "$Schema".asset

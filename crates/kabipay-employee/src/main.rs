@@ -2,7 +2,6 @@
 //! `GET /files/employee-document?token=...` (M5, HMAC time-limited download).
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use async_graphql::EmptySubscription;
@@ -122,23 +121,25 @@ async fn employee_file_download(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "file metadata not found".to_string()))?;
 
-    let full = st.file_root.join(&row.storage_path);
-    if !full.starts_with(&st.file_root) {
-        return Err((StatusCode::BAD_REQUEST, "path invalid".to_string()));
-    }
-    if !Path::new(&full).exists() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "file not on disk (check KABIPAY_LOCAL_FILE_ROOT)".to_string(),
-        ));
-    }
-
-    let body = tokio::fs::read(&full)
+    let body = document_file_service::read_stored_file_bytes(&st.file_root, &row)
         .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|e: KabiPayError| {
+            use kabipay_common::error::KabiPayError as E;
+            let st = match &e {
+                E::NotFound { .. } => StatusCode::NOT_FOUND,
+                E::Validation(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (st, e.to_string())
+        })?;
 
-    let ct = row
+    let ct = claims
         .mime_type
+        .as_ref()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or(row.mime_type.clone())
         .unwrap_or_else(|| "application/octet-stream".into());
     let filename = row.original_filename.as_deref().unwrap_or("file");
     let disp = format!("inline; filename=\"{filename}\"");

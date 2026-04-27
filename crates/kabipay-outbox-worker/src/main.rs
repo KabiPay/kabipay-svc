@@ -3,7 +3,7 @@
 //! `FAILED` / requeues with backoff fields.
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use kabipay_common::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
 use kabipay_common::load_dotenv;
 use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
@@ -11,8 +11,8 @@ use kabipay_common::telemetry::init_tracing;
 use kabipay_db_entities::ops::tenant_database;
 use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbBackend, EntityTrait, FromQueryResult,
-    QueryFilter, Set, Statement, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
+    FromQueryResult, QueryFilter, Set, Statement, TransactionTrait,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -35,6 +35,26 @@ fn poll_interval() -> Duration {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2000);
     Duration::from_millis(ms.max(250))
+}
+
+/// PROCESSING rows with `claimed_at` older than this are reset to PENDING (worker crash mid-flight).
+fn stale_processing_duration() -> std::time::Duration {
+    let sec: u64 = std::env::var("OUTBOX_STALE_PROCESSING_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120)
+        .max(30);
+    std::time::Duration::from_secs(sec)
+}
+
+/// `PROCESSING` rows with NULL `claimed_at` (pre-0034) are reclaimed if older than this from `created_at`.
+fn legacy_null_claimed_max_age() -> std::time::Duration {
+    let sec: u64 = std::env::var("OUTBOX_LEGACY_PROCESSING_MAX_AGE_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3600)
+        .max(300);
+    std::time::Duration::from_secs(sec)
 }
 
 fn max_retries() -> i32 {
@@ -100,6 +120,7 @@ async fn claim_next_pending(
         .ok_or_else(|| anyhow::anyhow!("outbox row vanished after lock"))?
         .into();
     am.status = Set(STATUS_PROCESSING.into());
+    am.claimed_at = Set(Some(Utc::now()));
     let updated = am.update(&txn).await.context("set PROCESSING")?;
     txn.commit().await?;
     Ok(Some(updated))
@@ -119,6 +140,7 @@ async fn mark_processed(tenant_db: &DatabaseConnection, id: Uuid) -> anyhow::Res
     let mut am: outbox_event::ActiveModel = m.into();
     am.status = Set(STATUS_PROCESSED.into());
     am.processed_at = Set(Some(Utc::now()));
+    am.claimed_at = Set(None);
     am.last_error = Set(None);
     am.update(tenant_db).await.context("mark PROCESSED")?;
     Ok(())
@@ -157,6 +179,9 @@ async fn mark_failure(
     am.retry_count = Set(next_retry);
     am.last_error = Set(Some(truncated));
     am.processed_at = Set(processed_at);
+    if status == STATUS_PENDING || status == STATUS_FAILED {
+        am.claimed_at = Set(None);
+    }
     am.update(tenant_db).await.context("mark failure / retry")?;
     Ok(())
 }
@@ -201,11 +226,52 @@ async fn deliver_event(model: &outbox_event::Model) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Reset stuck PROCESSING rows (dead worker) back to PENDING for retry.
+async fn reclaim_stale_processing(
+    tenant_db: &DatabaseConnection,
+    tenant_id: Uuid,
+) -> anyhow::Result<u64> {
+    let stale_line = Utc::now()
+        - ChronoDuration::from_std(stale_processing_duration())
+            .unwrap_or_else(|_| ChronoDuration::seconds(120));
+    let legacy_line = Utc::now()
+        - ChronoDuration::from_std(legacy_null_claimed_max_age())
+            .unwrap_or_else(|_| ChronoDuration::hours(1));
+    let res = tenant_db
+        .execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            r#"UPDATE outbox_event
+               SET status = $1,
+                   last_error = LEFT(COALESCE(last_error, '') || ' [reclaimed stale PROCESSING]', 2000),
+                   claimed_at = NULL
+               WHERE tenant_id = $2
+                 AND status = $3
+                 AND (
+                   (claimed_at IS NOT NULL AND claimed_at < $4)
+                   OR (claimed_at IS NULL AND created_at < $5)
+                 )"#,
+            vec![
+                STATUS_PENDING.into(),
+                tenant_id.into(),
+                STATUS_PROCESSING.into(),
+                stale_line.into(),
+                legacy_line.into(),
+            ],
+        ))
+        .await
+        .context("reclaim stale processing")?;
+    Ok(res.rows_affected())
+}
+
 async fn process_tenant_outbox(
     tenant_db: &DatabaseConnection,
     tenant_id: Uuid,
     cap: i32,
 ) -> anyhow::Result<usize> {
+    let r = reclaim_stale_processing(tenant_db, tenant_id).await?;
+    if r > 0 {
+        tracing::info!(%tenant_id, reclaimed = r, "outbox reclaimed stale PROCESSING rows");
+    }
     let mut n = 0;
     while let Some(ev) = claim_next_pending(tenant_db, tenant_id).await? {
         n += 1;
@@ -241,6 +307,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         poll_ms = interval.as_millis(),
         max_retries = cap,
+        stale_processing_sec = stale_processing_duration().as_secs(),
+        legacy_processing_max_sec = legacy_null_claimed_max_age().as_secs(),
         webhook = webhook_url().is_some(),
         "outbox worker started"
     );

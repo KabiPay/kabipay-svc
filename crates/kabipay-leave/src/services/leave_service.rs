@@ -409,6 +409,7 @@ async fn finalize_leave_approval(
         last_error: Set(None),
         created_at: Set(now),
         processed_at: Set(None),
+        claimed_at: Set(None),
     };
     ob.insert(txn).await?;
     Ok(())

@@ -12,12 +12,15 @@ use uuid::Uuid;
 
 use crate::resolvers::scope::assert_employee_in_data_scope;
 use crate::resolvers::types::{
-    CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto, OnboardingChecklistItemDto,
-    UpdateEmployeeInput, UploadEmployeeDocumentInput,
+    ClearanceChecklistItemDto, CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto,
+    FnfSettlementDto, OnboardingChecklistItemDto, SeparationDto, SubmitSeparationInput,
+    UpdateEmployeeInput, UploadEmployeeDocumentInput, UpsertFnfSettlementInput,
 };
 use crate::services::document_file_service;
 use crate::services::employee_service::{self, EmployeePatch, NewEmployee};
+use crate::services::offboarding_fnf_service;
 use crate::services::onboarding_service;
+use crate::services::separation_service;
 
 use crate::entities::d0008_document_system::document_type;
 use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
@@ -226,5 +229,166 @@ impl MutationRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(OnboardingChecklistItemDto::from(m))
+    }
+
+    /// File a separation / exit request (self-service, or HR on behalf of another employee).
+    async fn submit_separation(
+        &self,
+        ctx: &Context<'_>,
+        input: SubmitSeparationInput,
+    ) -> Result<SeparationDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let target_emp = if let Some(ref eid) = input.employee_id {
+            let e = parse_uuid(eid, "employeeId")?;
+            if claims.can_manage_employee_directory() {
+                e
+            } else {
+                let self_id = claims.employee_id.ok_or_else(|| KabiPayError::Unauthorised.into_graphql())?;
+                if e != self_id {
+                    return Err(
+                        KabiPayError::Forbidden(
+                            "only HR can file separation for another employee".into(),
+                        )
+                        .into_graphql(),
+                    );
+                }
+                e
+            }
+        } else {
+            resolve_client_employee_id(ctx, &db, tenant_id)
+                .await
+                .map_err(KabiPayError::into_graphql)?
+        };
+        employee_service::find_by_id(&db, tenant_id, target_emp)
+            .await
+            .map_err(KabiPayError::into_graphql)?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "employee",
+                    id: target_emp.to_string(),
+                }
+                .into_graphql()
+            })?;
+        let m = separation_service::insert_separation(
+            &db,
+            tenant_id,
+            target_emp,
+            input.separation_type,
+            input.resignation_date,
+            input.last_working_date,
+            input.reason,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(SeparationDto::from(m))
+    }
+
+    /// Approve a pending separation (HR / directory roles — same gate as `createEmployee`).
+    async fn approve_separation(&self, ctx: &Context<'_>, separation_id: ID) -> Result<SeparationDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&separation_id, "separationId")?;
+        let m = separation_service::resolve_separation(&db, tenant_id, sid, true, claims.sub)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(SeparationDto::from(m))
+    }
+
+    /// Reject a pending separation (HR / directory roles).
+    async fn reject_separation(&self, ctx: &Context<'_>, separation_id: ID) -> Result<SeparationDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&separation_id, "separationId")?;
+        let m = separation_service::resolve_separation(&db, tenant_id, sid, false, claims.sub)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(SeparationDto::from(m))
+    }
+
+    /// HR: fill FNF component amounts (while status is DRAFT). Net payable is recalculated.
+    async fn upsert_fnf_settlement(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertFnfSettlementInput,
+    ) -> Result<FnfSettlementDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&input.separation_id, "separationId")?;
+        let m = offboarding_fnf_service::upsert_fnf_settlement(
+            &db,
+            tenant_id,
+            sid,
+            &input.leave_encashment,
+            &input.gratuity_amount,
+            &input.bonus_payable,
+            &input.recovery_amount,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(FnfSettlementDto::from(m))
+    }
+
+    /// HR: mark FNF as PROCESSED (no further amount edits).
+    async fn finalize_fnf_settlement(
+        &self,
+        ctx: &Context<'_>,
+        separation_id: ID,
+    ) -> Result<FnfSettlementDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&separation_id, "separationId")?;
+        let m = offboarding_fnf_service::finalize_fnf_settlement(&db, tenant_id, sid, claims.sub)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(FnfSettlementDto::from(m))
+    }
+
+    /// HR: create DRAFT FNF + default clearance for an `APPROVED` separation (e.g. legacy row before auto-seed).
+    async fn ensure_separation_offboarding_artifacts(
+        &self,
+        ctx: &Context<'_>,
+        separation_id: ID,
+    ) -> Result<bool> {
+        require_employee_mutation_rbac(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&separation_id, "separationId")?;
+        offboarding_fnf_service::backfill_approved_artifacts(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
+
+    /// HR: toggle a department clearance line.
+    async fn set_clearance_item_cleared(
+        &self,
+        ctx: &Context<'_>,
+        clearance_id: ID,
+        is_cleared: bool,
+    ) -> Result<ClearanceChecklistItemDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let cid = parse_uuid(&clearance_id, "clearanceId")?;
+        let m = offboarding_fnf_service::set_clearance_cleared(
+            &db,
+            tenant_id,
+            cid,
+            is_cleared,
+            claims.sub,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(ClearanceChecklistItemDto::from(m))
     }
 }

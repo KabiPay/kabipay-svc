@@ -2,14 +2,16 @@
 
 use async_graphql::{Context, Object, Result, ID};
 use kabipay_common::{
-    subgraph::require_tenant_id, subgraph::resolve_client_employee_id, subgraph::tenant_db,
+    subgraph::{
+        require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db,
+    },
     KabiPayError,
 };
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    DepartmentDto, DesignationDto, DocumentTypeDto, EmployeeDocumentDto, EmployeeDto,
-    OnboardingChecklistItemDto, OrgChartRowDto,
+    ClearanceChecklistItemDto, DepartmentDto, DesignationDto, DocumentTypeDto, EmployeeDocumentDto,
+    EmployeeDto, FnfSettlementDto, OnboardingChecklistItemDto, OrgChartRowDto, SeparationDto,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -18,7 +20,11 @@ use crate::resolvers::scope::{
     assert_employee_in_data_scope, data_scope_employee, resolve_viewer_employee,
 };
 use crate::services::document_file_service::{self, download_claims};
-use crate::services::{document_service, employee_service, onboarding_service, org_service};
+use crate::services::{
+    document_service, employee_service, offboarding_fnf_service, onboarding_service, org_service,
+    separation_service,
+};
+use crate::entities::d0029_file_storage::file_storage;
 
 pub struct QueryRoot;
 
@@ -202,8 +208,20 @@ impl QueryRoot {
             KabiPayError::Validation("document has no file yet".to_string()).into_graphql()
         })?;
         assert_employee_in_data_scope(ctx, &db, tenant_id, model.employee_id).await?;
+        let fs_row = file_storage::Entity::find_by_id(file_id)
+            .filter(file_storage::Column::TenantId.eq(tenant_id))
+            .one(&db)
+            .await
+            .map_err(|e: sea_orm::DbErr| KabiPayError::from(e).into_graphql())?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "fileStorage",
+                    id: file_id.to_string(),
+                }
+                .into_graphql()
+            })?;
         let ttl = ttl_seconds.clamp(60, 86_400) as i64;
-        let claims = download_claims(tenant_id, file_id, None, ttl);
+        let claims = download_claims(tenant_id, file_id, fs_row.mime_type.clone(), ttl);
         Ok(document_file_service::public_download_url(&claims))
     }
 
@@ -230,6 +248,96 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(OnboardingChecklistItemDto::from).collect())
+    }
+
+    /// Separation / offboarding requests. HR directory roles see tenant-wide rows; others see their own.
+    async fn separations(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<SeparationDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let claims = require_client_claims(ctx)?;
+        let filter = if claims.can_manage_employee_directory() {
+            None
+        } else {
+            Some(
+                resolve_client_employee_id(ctx, &db, tenant_id)
+                    .await
+                    .map_err(KabiPayError::into_graphql)?,
+            )
+        };
+        let rows = separation_service::list_for_tenant(&db, tenant_id, limit, filter)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(SeparationDto::from).collect())
+    }
+
+    /// Full & final row for a separation (if HR has run approval, a DRAFT or PROCESSED row exists).
+    async fn fnf_settlement(
+        &self,
+        ctx: &Context<'_>,
+        separation_id: ID,
+    ) -> Result<Option<FnfSettlementDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let sid = parse_uuid(&separation_id, "separation id")?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sep = offboarding_fnf_service::get_separation_tenant(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let Some(sep) = sep else {
+            return Ok(None);
+        };
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_employee_directory() {
+            let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+            if sep.employee_id != viewer {
+                return Err(
+                    KabiPayError::Forbidden("cannot view FNF for this separation".into())
+                        .into_graphql(),
+                );
+            }
+        }
+        let m = offboarding_fnf_service::get_fnf_by_separation(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(m.map(FnfSettlementDto::from))
+    }
+
+    /// Department exit clearance items for a separation.
+    async fn clearance_checklist(
+        &self,
+        ctx: &Context<'_>,
+        separation_id: ID,
+    ) -> Result<Vec<ClearanceChecklistItemDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let sid = parse_uuid(&separation_id, "separation id")?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sep = offboarding_fnf_service::get_separation_tenant(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let Some(sep) = sep else {
+            return Ok(vec![]);
+        };
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_employee_directory() {
+            let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+            if sep.employee_id != viewer {
+                return Err(
+                    KabiPayError::Forbidden("cannot view clearance for this separation".into())
+                        .into_graphql(),
+                );
+            }
+        }
+        let rows = offboarding_fnf_service::list_clearance(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(ClearanceChecklistItemDto::from).collect())
     }
 }
 

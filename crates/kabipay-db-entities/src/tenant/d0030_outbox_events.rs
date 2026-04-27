@@ -18,6 +18,8 @@ pub mod outbox_event {
         pub last_error: Option<String>,
         pub created_at: DateTimeUtc,
         pub processed_at: Option<DateTimeUtc>,
+        /// When the worker moved this row to PROCESSING (for stale reclaim).
+        pub claimed_at: Option<DateTimeUtc>,
     }
 
     impl ActiveModelBehavior for ActiveModel {}

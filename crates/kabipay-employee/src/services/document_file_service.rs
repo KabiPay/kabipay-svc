@@ -1,6 +1,7 @@
-//! Local-disk `file_storage` + `employee_document` writes (M5 / Gap F).
+//! `file_storage` + `employee_document` writes: **LOCAL** disk or **S3-compatible** object storage
+//! (Cloudflare R2, AWS S3, MinIO, …). See `object_store::config` for environment variables.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use kabipay_common::{KabiPayError, KabiPayResult};
@@ -10,6 +11,10 @@ use sea_orm::{
 use uuid::Uuid;
 
 use super::file_token::{sign_download_token, FileDownloadClaims};
+use super::object_store::{
+    FileStorageMode, S3CompatSettings, ensure_tenant_bucket, s3_operator_for_bucket, s3_put, s3_read,
+    tenant_bucket_name, PROVIDER_S3_COMPAT,
+};
 use crate::entities::d0008_document_system::employee_document;
 use crate::entities::d0029_file_storage::file_storage;
 
@@ -29,7 +34,42 @@ fn absolute_storage_path(tenant_id: Uuid, file_id: Uuid) -> PathBuf {
     p
 }
 
-/// Persist `bytes` to disk and insert `file_storage` + `employee_document` (status PENDING).
+/// Read bytes for `GET /files/employee-document`. Uses row metadata (not only current env) so
+/// old local files still work after switching to R2.
+pub async fn read_stored_file_bytes(
+    file_root: &Path,
+    row: &file_storage::Model,
+) -> KabiPayResult<Vec<u8>> {
+    if row.provider == PROVIDER_LOCAL {
+        let full = file_root.join(&row.storage_path);
+        if !full.starts_with(file_root) {
+            return Err(KabiPayError::Validation("path invalid".into()));
+        }
+        return match tokio::fs::read(&full).await {
+            Ok(b) => Ok(b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(KabiPayError::NotFound {
+                entity: "file_storage",
+                id: row.id.to_string(),
+            }),
+            Err(e) => Err(KabiPayError::Internal(format!("read local file: {e}"))),
+        };
+    }
+    if row.provider == PROVIDER_S3_COMPAT {
+        let cfg = S3CompatSettings::from_env()?;
+        let b = row
+            .bucket
+            .as_ref()
+            .ok_or_else(|| KabiPayError::Internal("S3 file missing bucket name in DB".into()))?;
+        let op = s3_operator_for_bucket(&cfg, b)?;
+        return s3_read(&op, &row.storage_path).await;
+    }
+    Err(KabiPayError::Validation(format!(
+        "unsupported file_storage.provider: {}",
+        row.provider
+    )))
+}
+
+/// Persist `bytes` to disk or object storage, then `file_storage` + `employee_document` (PENDING).
 pub async fn upload_employee_document(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -52,6 +92,82 @@ pub async fn upload_employee_document(
         )));
     }
 
+    let mode = FileStorageMode::from_env();
+    match mode {
+        FileStorageMode::Local => {
+            upload_local(
+                db,
+                tenant_id,
+                employee_id,
+                document_type_id,
+                uploader_user_id,
+                original_filename,
+                mime_type,
+                bytes,
+            )
+            .await
+        }
+        FileStorageMode::S3Compat => {
+            let cfg = S3CompatSettings::from_env()?;
+            let file_id = Uuid::new_v4();
+            let doc_id = Uuid::new_v4();
+            let now = Utc::now();
+            let (bucket, storage_path) = if cfg.per_tenant_bucket {
+                let b = tenant_bucket_name(tenant_id, &cfg.bucket_prefix);
+                ensure_tenant_bucket(&cfg, &b).await?;
+                (b, file_id.to_string())
+            } else {
+                let b = cfg
+                    .default_bucket
+                    .as_ref()
+                    .expect("validated in S3CompatSettings::from_env")
+                    .clone();
+                ensure_tenant_bucket(&cfg, &b).await?;
+                (b, format!("{}/{}", tenant_id, file_id))
+            };
+            let sz = bytes.len() as i64;
+            let op = s3_operator_for_bucket(&cfg, &bucket)?;
+            s3_put(
+                &op,
+                &storage_path,
+                bytes,
+                mime_type.as_deref().filter(|s| !s.is_empty()),
+            )
+            .await?;
+            insert_fs_doc(
+                db,
+                tenant_id,
+                employee_id,
+                document_type_id,
+                uploader_user_id,
+                original_filename,
+                mime_type,
+                file_id,
+                doc_id,
+                now,
+                Some(bucket),
+                storage_path,
+                sz,
+            )
+            .await
+        }
+        FileStorageMode::AzureBlob => Err(KabiPayError::Validation(
+            "KABIPAY_FILE_STORAGE_MODE=azure is not implemented yet. Use local, or s3_compat for R2/S3/MinIO."
+                .into(),
+        )),
+    }
+}
+
+async fn upload_local(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    document_type_id: Uuid,
+    uploader_user_id: Option<Uuid>,
+    original_filename: String,
+    mime_type: Option<String>,
+    bytes: Vec<u8>,
+) -> KabiPayResult<employee_document::Model> {
     let file_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
     let now = Utc::now();
@@ -65,18 +181,57 @@ pub async fn upload_employee_document(
     tokio::fs::write(&path, &bytes)
         .await
         .map_err(|e| KabiPayError::Internal(format!("write local file: {e}")))?;
+    let sz = bytes.len() as i64;
 
+    insert_fs_doc(
+        db,
+        tenant_id,
+        employee_id,
+        document_type_id,
+        uploader_user_id,
+        original_filename,
+        mime_type,
+        file_id,
+        doc_id,
+        now,
+        None,
+        rel,
+        sz,
+    )
+    .await
+}
+
+async fn insert_fs_doc(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    document_type_id: Uuid,
+    uploader_user_id: Option<Uuid>,
+    original_filename: String,
+    mime_type: Option<String>,
+    file_id: Uuid,
+    doc_id: Uuid,
+    now: chrono::DateTime<Utc>,
+    bucket: Option<String>,
+    storage_path: String,
+    size: i64,
+) -> KabiPayResult<employee_document::Model> {
+    let provider = if bucket.is_some() {
+        PROVIDER_S3_COMPAT.into()
+    } else {
+        PROVIDER_LOCAL.into()
+    };
     let txn = db.begin().await?;
 
     let fs_am = file_storage::ActiveModel {
         id: Set(file_id),
         tenant_id: Set(tenant_id),
-        provider: Set(PROVIDER_LOCAL.into()),
-        bucket: Set(None),
-        storage_path: Set(rel),
+        provider: Set(provider),
+        bucket: Set(bucket),
+        storage_path: Set(storage_path),
         original_filename: Set(Some(original_filename)),
         mime_type: Set(mime_type),
-        file_size_bytes: Set(Some(bytes.len() as i64)),
+        file_size_bytes: Set(Some(size)),
         is_public: Set(false),
         uploaded_by: Set(uploader_user_id),
         created_at: Set(now),
