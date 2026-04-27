@@ -1,6 +1,6 @@
 //! GraphQL DTOs for kabipay-workflow.
 
-use async_graphql::{SimpleObject, ID};
+use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, Utc};
 use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_instance, workflow_step};
 
@@ -101,4 +101,27 @@ impl From<workflow_step::Model> for WorkflowStepDto {
 pub struct WorkflowWithStepsDto {
     pub workflow: WorkflowDto,
     pub steps: Vec<WorkflowStepDto>,
+}
+
+/// Create a new workflow **definition** (e.g. `LEAVE_REQUEST`, `EXPENSE`).
+#[derive(InputObject, Clone, Debug)]
+pub struct CreateWorkflowInput {
+    pub name: String,
+    /// Typically `LEAVE_REQUEST`, `EXPENSE`, etc. (must match runtime consumers).
+    pub entity_type: String,
+    #[graphql(default = true)]
+    pub is_active: bool,
+}
+
+/// Add a **step** to a workflow. `sequence_order` must be unique per workflow.
+#[derive(InputObject, Clone, Debug)]
+pub struct CreateWorkflowStepInput {
+    pub workflow_id: ID,
+    pub sequence_order: i32,
+    pub step_name: String,
+    pub approver_type: Option<String>,
+    pub approver_role_id: Option<ID>,
+    #[graphql(default = false)]
+    pub can_skip: bool,
+    pub sla_hours: Option<i32>,
 }

@@ -184,6 +184,8 @@ pub const PERM_TAX_PROOF_APPROVE: &str = "tax:approve";
 pub const PERM_PAYROLL_STATUTORY_EXPORT: &str = "payroll:statutory_export";
 /// Configure live punch enforcement (geofence / IP allowlist) for the tenant.
 pub const PERM_ATTENDANCE_PUNCH_POLICY: &str = "attendance:punch_policy";
+/// Create or edit **workflow** definitions and **steps** (tenant configuration).
+pub const PERM_WORKFLOW_MANAGE: &str = "workflow:manage";
 
 /// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
 /// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
@@ -259,6 +261,17 @@ impl ClientClaims {
     /// Configure **live punch** policy (geofence + IP allowlist) for the tenant.
     pub fn can_configure_attendance_punch_policy(&self) -> bool {
         if self.has_any_permission(&[PERM_ATTENDANCE_PUNCH_POLICY]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Create or update **workflow** definitions and **steps** (tenant approval graphs).
+    pub fn can_manage_workflow_definitions(&self) -> bool {
+        if self.has_any_permission(&[PERM_WORKFLOW_MANAGE]) {
             return true;
         }
         self.roles.iter().any(|r| {
