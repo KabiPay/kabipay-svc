@@ -44,6 +44,8 @@ pub struct ExpenseDto {
     pub expense_date: NaiveDate,
     pub title: String,
     pub status: String,
+    /// Set when **`EXPENSE`** workflow is active with ≥1 step (**M32**).
+    pub workflow_instance_id: Option<ID>,
     pub submitted_at: DateTime<Utc>,
 }
 
@@ -121,6 +123,7 @@ impl From<expense::Model> for ExpenseDto {
             expense_date: m.expense_date,
             title: m.title,
             status: m.status,
+            workflow_instance_id: m.workflow_instance_id.map(|u| ID(u.to_string())),
             submitted_at: m.submitted_at,
         }
     }

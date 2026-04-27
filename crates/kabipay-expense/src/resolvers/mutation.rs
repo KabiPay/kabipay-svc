@@ -89,7 +89,7 @@ impl MutationRoot {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let id = parse_uuid(&expense_id, "expenseId")?;
-        let m = expense_service::reject_expense(&db, tenant_id, id, reason)
+        let m = expense_service::reject_expense(&db, tenant_id, id, claims.sub, reason)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(ExpenseDto::from(m))

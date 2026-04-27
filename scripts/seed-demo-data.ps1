@@ -247,6 +247,11 @@ $OutboxEventPendId   = New-DeterministicUuid -Seed "${Schema}:outbox:demo_pendin
 $WorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:leave-approval"
 $WorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:leave:1"
 $WorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:1"
+# Expense claim workflow (entity_type EXPENSE — M32), two-step demo on seeded `$ExpenseId`
+$ExpenseWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:expense-approval"
+$ExpenseWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:1"
+$ExpenseWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:2"
+$ExpenseWorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:expense:1"
 
 # Notification / Communication (0027)
 $AnnouncementId      = New-DeterministicUuid -Seed "${Schema}:announcement:1"
@@ -799,6 +804,40 @@ INSERT INTO "$Schema".workflow_instance (
 UPDATE "$Schema".leave_request
 SET workflow_instance_id = '$WorkflowInstanceId', updated_at = NOW()
 WHERE id = '$LeaveRequest1Id' AND (workflow_instance_id IS DISTINCT FROM '$WorkflowInstanceId');
+
+INSERT INTO "$Schema".workflow (id, tenant_id, name, entity_type, is_active)
+VALUES ('$ExpenseWorkflowId', '$TenantId', 'Expense Approval', 'EXPENSE', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$ExpenseWorkflowStep1Id', '$TenantId', '$ExpenseWorkflowId', 1, 'Manager approval',
+    NULL, NULL, false, NULL
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$ExpenseWorkflowStep2Id', '$TenantId', '$ExpenseWorkflowId', 2, 'Finance verification',
+    NULL, NULL, false, NULL
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workflow_instance (
+    id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id
+) VALUES (
+    '$ExpenseWorkflowInstanceId', '$TenantId', '$ExpenseWorkflowId',
+    'EXPENSE', '$ExpenseId', 'IN_PROGRESS', '$ExpenseWorkflowStep1Id'
+) ON CONFLICT (id) DO UPDATE SET
+    current_step_id = EXCLUDED.current_step_id,
+    status = EXCLUDED.status,
+    updated_at = NOW();
+
+UPDATE "$Schema".expense
+SET workflow_instance_id = '$ExpenseWorkflowInstanceId', updated_at = NOW()
+WHERE id = '$ExpenseId' AND (workflow_instance_id IS DISTINCT FROM '$ExpenseWorkflowInstanceId');
 "@
 Invoke-TenantSql -Label "0025 workflow (workflow + instance)" -Sql $SqlWorkflow
 
