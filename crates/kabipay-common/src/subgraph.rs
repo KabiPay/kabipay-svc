@@ -233,7 +233,7 @@ where
         let dsn = ops_dsn_from_env();
         let ops_db = connect_ops_db(&dsn).await.map_err(|e| {
             anyhow::anyhow!(
-                "{}: failed to connect to ops DB at {dsn}: {e}",
+                "{}: failed to connect to ops DB: {e} (check Postgres reachability, TLS/sslmode, and KABIPAY_DB_POOL_MAX when running many services)",
                 cfg.service_name
             )
         })?;

@@ -27,6 +27,7 @@ use kabipay_common::{
     telemetry::init_tracing,
 };
 use std::net::SocketAddr;
+use tokio::signal;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 mod handlers;
@@ -38,8 +39,28 @@ mod tokens;
 
 use state::AppState;
 
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        eprintln!(
+            "kabipay-auth: process panicked. If you only see `exit code: 0xffffffff` from `cargo run`, try: \
+             `cargo build -p kabipay-auth` then `.\\target\\debug\\kabipay-auth.exe` (or exclude the repo from real-time AV)."
+        );
+    }));
+}
+
+async fn shutdown_signal() {
+    if let Err(e) = signal::ctrl_c().await {
+        tracing::warn!(error = %e, "kabipay-auth failed to listen for Ctrl+C");
+    } else {
+        tracing::info!("kabipay-auth Ctrl+C received, shutting down");
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    install_panic_hook();
     load_dotenv();
     init_tracing("kabipay-auth");
 
@@ -86,7 +107,10 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "kabipay-auth listening, ready for connections");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("kabipay-auth server stopped");
     Ok(())
 }
 

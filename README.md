@@ -1,14 +1,27 @@
 # kabipay-svc
 
-Rust workspace for **kabipay-auth** (REST) and federated **GraphQL subgraphs** (employee, leave, payroll, etc.). Each crate exposes HTTP on its own port; the **kabipay-gateway** service stitches them into one GraphQL endpoint.
+Rust workspace for **kabipay-auth** (REST, JWT), **~19 async-GraphQL subgraphs** (operator/tenant/billing/HRMS domains), a shared **outbox** background worker, and library crates **kabipay-common** + **kabipay-db-entities** (SeaORM). Each HTTP service listens on its own port; **kabipay-gateway** stitches the subgraphs into one federated GraphQL endpoint (see `kabipay-gateway`).
+
+## Architecture
+
+| Layer | Contents |
+|-------|----------|
+| **Control / ops plane** | `kabipay-operator`, `kabipay-tenant`, `kabipay-billing` — `kabipay_ops` schema, subscriptions, operator APIs. |
+| **Client / tenant plane** | Employee, leave, attendance, payroll, tax, benefits, expense, recruitment, performance, lms, succession, compensation, assets, grievance, workflow, notification — one **tenant schema** per customer (`tenant_<uuid>`), resolved via `kabipay_ops.tenant_database`. |
+| **Auth** | `kabipay-auth` — REST login/refresh, HS256 for client and operator planes (separate secrets). |
+| **Async integration** | `kabipay-outbox-worker` — polls `outbox_event` in tenant DBs; **no GraphQL** (CLI process). |
+| **Data** | Single PostgreSQL database: Liquibase **ops** changelog once, **tenant** changelog per provisioned tenant (see `kabipay-database`). |
+
+**Postgres access:** prefer **`DATABASE_URL`** (or `POSTGRES_*` building a DSN). For **Neon** and other serverless PG, use the **`*-pooler`** host in `DATABASE_URL` to keep connection count and active compute down; set `POSTGRES_SSLMODE=require` when the provider needs TLS. Per-process pool caps (`KABIPAY_DB_POOL_MAX`, `KABIPAY_TENANT_DB_POOL_MAX`, optional `KABIPAY_DB_IDLE_TIMEOUT_SECS`) are documented in `.env.example`.
 
 ## Dependencies
 
 | Requirement | Notes |
 |-------------|--------|
 | **Rust** | Stable toolchain (`rustup`, `cargo`). |
-| **PostgreSQL 16** | Database with **ops** schema (`kabipay_ops`) and per-tenant schemas created via **kabipay-database** (Liquibase). |
-| **Environment** | Copy `.env.example` → `.env` in this folder, or export the same variables. Services call `dotenvy` where configured. |
+| **PostgreSQL 16** | **Ops** schema `kabipay_ops` + per-**tenant** schemas; apply migrations with **kabipay-database** (Liquibase). |
+| **Environment** | Copy `.env.example` → `.env`. Managed DBs: TLS + pooler URL as above. |
+| **Node.js** (for scripts) | `provision-tenant.ps1` / `seed-demo-data.ps1` invoke `kabipay-database` (bundled Liquibase + `pg`). |
 
 Optional:
 
@@ -26,8 +39,9 @@ Optional:
 
    Edit `.env`:
 
-   - Set **`DATABASE_URL`** *or* **`POSTGRES_HOST`**, **`POSTGRES_PORT`**, **`POSTGRES_DB`**, **`POSTGRES_USER`**, **`POSTGRES_PASSWORD`** (and **`POSTGRES_SSLMODE`** for managed providers) so they match your database.
+   - Set **`DATABASE_URL`** (recommended) *or* **`POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`** (and **`POSTGRES_SSLMODE=require`** for Neon, Aiven, etc.). Use the **pooler** hostname for Neon when you want pooled server-side sessions.
    - Set **`KABIPAY_CLIENT_JWT_SECRET`** and **`KABIPAY_OPERATOR_JWT_SECRET`** to long random strings (32+ characters).
+   - For many processes against a small DB, set **`KABIPAY_DB_POOL_MAX=1`** and **`KABIPAY_TENANT_DB_POOL_MAX=1`** (see `.env.example`).
 
 ## Build
 
@@ -69,7 +83,7 @@ After a **release** or **debug** build, from this directory:
 .\scripts\start-subgraphs.ps1
 ```
 
-The script starts **debug** binaries under `target\debug\kabipay-*.exe` on ports **4010–4028**. Ensure **`kabipay-auth`** is started separately if the UI or gateway needs login.
+The script starts **debug** binaries under `target\debug\kabipay-*.exe` on ports **4010–4028**. Unless you set `KABIPAY_DB_POOL_MAX` / `KABIPAY_TENANT_DB_POOL_MAX` in your shell, it defaults both to **1** so many processes can share a small managed Postgres `max_connections` limit (otherwise startup hits “pool timed out” when the DB refuses new connections). Ensure **`kabipay-auth`** is started separately if the UI or gateway needs login.
 
 ## Scripts (optional)
 
@@ -78,18 +92,37 @@ The script starts **debug** binaries under `target\debug\kabipay-*.exe` on ports
 | `scripts\provision-tenant.ps1` | Ops rows + tenant schema + Liquibase tenant migrations (Node + `kabipay-database` `npm install`). |
 | `scripts\update-tenant-liquibase.ps1` | Re-run tenant migrations for an existing schema. |
 | `scripts\seed-demo-data.ps1` | Demo seed data (requires DB + tenant already provisioned). |
+| `cargo run -p kabipay-outbox-worker` | Outbox poller (same DB as subgraphs; configure `OUTBOX_*` in `.env.example`). |
 
 Adjust paths inside scripts if **kabipay-database** is not a sibling folder.
 
-## Ports (defaults)
+## Services and ports (defaults)
 
-| Service | Env var | Default port |
-|---------|---------|--------------|
-| Auth REST | `KABIPAY_AUTH_PORT` | 4001 |
-| Operator subgraph | `KABIPAY_OPERATOR_PORT` | 4010 |
-| … | … | 4011–4028 |
+| Crate / binary | Role | Env var | Default port |
+|----------------|------|---------|--------------|
+| `kabipay-auth` | REST (login, tokens) | `KABIPAY_AUTH_PORT` | 4001 |
+| `kabipay-operator` | GraphQL (ops) | `KABIPAY_OPERATOR_PORT` | 4010 |
+| `kabipay-tenant` | GraphQL (ops) | `KABIPAY_TENANT_PORT` | 4011 |
+| `kabipay-billing` | GraphQL (ops) | `KABIPAY_BILLING_PORT` | 4012 |
+| `kabipay-employee` | GraphQL | `KABIPAY_EMPLOYEE_PORT` | 4013 |
+| `kabipay-leave` | GraphQL | `KABIPAY_LEAVE_PORT` | 4014 |
+| `kabipay-attendance` | GraphQL | `KABIPAY_ATTENDANCE_PORT` | 4015 |
+| `kabipay-payroll` | GraphQL | `KABIPAY_PAYROLL_PORT` | 4016 |
+| `kabipay-tax` | GraphQL | `KABIPAY_TAX_PORT` | 4017 |
+| `kabipay-benefits` | GraphQL | `KABIPAY_BENEFITS_PORT` | 4018 |
+| `kabipay-expense` | GraphQL | `KABIPAY_EXPENSE_PORT` | 4019 |
+| `kabipay-recruitment` | GraphQL | `KABIPAY_RECRUITMENT_PORT` | 4020 |
+| `kabipay-performance` | GraphQL | `KABIPAY_PERFORMANCE_PORT` | 4021 |
+| `kabipay-lms` | GraphQL | `KABIPAY_LMS_PORT` | 4022 |
+| `kabipay-succession` | GraphQL | `KABIPAY_SUCCESSION_PORT` | 4023 |
+| `kabipay-compensation` | GraphQL | `KABIPAY_COMPENSATION_PORT` | 4024 |
+| `kabipay-assets` | GraphQL | `KABIPAY_ASSETS_PORT` | 4025 |
+| `kabipay-grievance` | GraphQL | `KABIPAY_GRIEVANCE_PORT` | 4026 |
+| `kabipay-workflow` | GraphQL | `KABIPAY_WORKFLOW_PORT` | 4027 |
+| `kabipay-notification` | GraphQL | `KABIPAY_NOTIFICATION_PORT` | 4028 |
+| `kabipay-outbox-worker` | Background worker (no HTTP) | — | — |
 
-Exact mapping is in `.env.example` and `scripts\start-subgraphs.ps1`.
+Stitched URLs: `http://127.0.0.1:<port>/graphql`. Canonical list for the gateway: `kabipay-gateway/src/subgraphs.ts`. `start-subgraphs.ps1` starts only the 19 GraphQL executables (4010–4028); run **auth** and **outbox** separately.
 
 ## Related repositories
 

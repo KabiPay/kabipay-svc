@@ -1,5 +1,13 @@
 # Starts all federated GraphQL subgraphs (4010-4028). Run from repo root or kabipay-svc.
 # Requires: cargo build for each crate (use: cargo build -j 1 -p <crate> per crate if full workspace build OOMs on Windows).
+#
+# Connection budget: each process opens its own SeaORM/sqlx pool. A managed Postgres with
+# max_connections ~20 will reject or stall new logins if 19 pools each try to open many
+# connections at once. Unless you already set these in the parent shell, we default to
+# tiny pools so the full subgraph grid can start (raise them for production / single-service).
+if (-not $env:KABIPAY_DB_POOL_MAX) { $env:KABIPAY_DB_POOL_MAX = '1' }
+if (-not $env:KABIPAY_TENANT_DB_POOL_MAX) { $env:KABIPAY_TENANT_DB_POOL_MAX = '1' }
+
 $ErrorActionPreference = 'Stop'
 $base = Split-Path -Parent $PSScriptRoot
 $runs = @(
@@ -32,5 +40,7 @@ foreach ($r in $runs) {
     $psi.UseShellExecute = $false
     $psi.EnvironmentVariables[$k] = $v
     [void][System.Diagnostics.Process]::Start($psi)
+    # Small delay avoids a simultaneous TLS/auth stampede against small managed DBs.
+    Start-Sleep -Milliseconds 250
 }
-Write-Host "Started $($runs.Count) subgraph processes. GraphQL: http://127.0.0.1:<port>/graphql (4010-4028)."
+Write-Host "Started $($runs.Count) subgraph processes (KABIPAY_DB_POOL_MAX=$($env:KABIPAY_DB_POOL_MAX)). GraphQL: http://127.0.0.1:<port>/graphql (4010-4028)."

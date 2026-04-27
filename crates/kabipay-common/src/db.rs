@@ -13,6 +13,7 @@ use kabipay_db_entities::ops::tenant_database;
 use sea_orm::{
     ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, QueryFilter,
 };
+use sqlx::Connection;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -35,6 +36,16 @@ fn pool_connect_timeout() -> Duration {
 
 fn pool_acquire_timeout() -> Duration {
     let secs: u64 = std::env::var("KABIPAY_DB_ACQUIRE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    Duration::from_secs(secs.max(1))
+}
+
+/// How long a pooled connection may sit unused before the pool closes it (ops + tenant pools).
+/// Default 60s — shorter idle helps serverless / Neon compute go idle sooner.
+fn pool_idle_timeout() -> Duration {
+    let secs: u64 = std::env::var("KABIPAY_DB_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(60);
@@ -205,7 +216,7 @@ pub async fn resolve_tenant_handle(
         .min_connections(0)
         .connect_timeout(pool_connect_timeout())
         .acquire_timeout(pool_acquire_timeout())
-        .idle_timeout(Duration::from_secs(300))
+        .idle_timeout(pool_idle_timeout())
         .sqlx_logging(false)
         .set_schema_search_path(format!("{},kabipay_ops,public", schema_name));
 
@@ -240,18 +251,58 @@ pub fn derive_tenant_schema_name(tenant_id: Uuid) -> String {
     format!("tenant_{}", &hex[..8])
 }
 
+/// One raw session before opening the ORM pool. Surfaces real Postgres errors (TLS, auth,
+/// `FATAL: sorry, too many clients`) instead of sqlx's easy-to-misread `PoolTimedOut`.
+async fn preflight_ops_session(dsn: &str) -> KabiPayResult<()> {
+    let mut conn = sqlx::postgres::PgConnection::connect(dsn).await.map_err(|e| {
+        KabiPayError::Internal(format!(
+            "postgres session failed (not the connection pool yet): {e}"
+        ))
+    })?;
+
+    sqlx::query("SET search_path TO kabipay_ops, public")
+        .execute(&mut conn)
+        .await
+        .map_err(|e| {
+            KabiPayError::Internal(format!(
+                "connected but `SET search_path TO kabipay_ops, public` failed (migrations / schema missing?): {e}"
+            ))
+        })?;
+
+    conn.close()
+        .await
+        .map_err(|e| KabiPayError::Internal(format!("closing preflight session: {e}")))
+}
+
+fn skip_ops_preflight() -> bool {
+    matches!(
+        std::env::var("KABIPAY_DB_SKIP_PREFLIGHT").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
 /// Build the single ops-plane connection. Called once at service startup.
 pub async fn connect_ops_db(dsn: &str) -> KabiPayResult<DatabaseConnection> {
+    if !skip_ops_preflight() {
+        preflight_ops_session(dsn).await?;
+    }
+
     let mut opts = ConnectOptions::new(dsn.to_string());
-    opts.max_connections(pool_max_connections(20))
+    // Default 5 per process; raise for a single high-traffic service. For ~20 subgraphs on
+    // a small managed DB, set KABIPAY_DB_POOL_MAX=1 (see scripts/start-subgraphs.ps1).
+    opts.max_connections(pool_max_connections(5))
         .min_connections(0)
         .connect_timeout(pool_connect_timeout())
         .acquire_timeout(pool_acquire_timeout())
-        .idle_timeout(Duration::from_secs(300))
+        .idle_timeout(pool_idle_timeout())
         .sqlx_logging(false)
         .set_schema_search_path("kabipay_ops,public");
 
-    Database::connect(opts).await.map_err(Into::into)
+    Database::connect(opts).await.map_err(|e| {
+        KabiPayError::Internal(format!(
+            "ORM pool open failed after login succeeded (try KABIPAY_DB_POOL_MAX or fewer running services): {e}"
+        ))
+    })
 }
 
 #[cfg(test)]
