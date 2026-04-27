@@ -2,7 +2,9 @@
 
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::ops::integration_connector as ic_connector;
-use kabipay_db_entities::tenant::d0026_integrations::{tenant_integration, webhook_subscription};
+use kabipay_db_entities::tenant::d0026_integrations::{
+    tenant_integration, webhook_delivery_log, webhook_subscription,
+};
 use kabipay_db_entities::tenant::d0027_communication_audit::audit_log;
 use kabipay_db_entities::tenant::d0024_analytics::{
     dashboard, dashboard_widget, report_definition, report_schedule, workforce_snapshot,
@@ -203,6 +205,21 @@ pub async fn list_webhook_subscriptions(
     webhook_subscription::Entity::find()
         .filter(webhook_subscription::Column::TenantId.eq(tenant_id))
         .order_by_desc(webhook_subscription::Column::CreatedAt)
+        .limit(limit)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)
+}
+
+pub async fn list_webhook_delivery_logs(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    limit: u64,
+) -> KabiPayResult<Vec<webhook_delivery_log::Model>> {
+    let limit = limit.clamp(1, 500);
+    webhook_delivery_log::Entity::find()
+        .filter(webhook_delivery_log::Column::TenantId.eq(tenant_id))
+        .order_by_desc(webhook_delivery_log::Column::DeliveredAt)
         .limit(limit)
         .all(db)
         .await

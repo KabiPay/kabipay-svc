@@ -94,4 +94,21 @@ impl MutationRoot {
         .map_err(KabiPayError::into_graphql)?;
         Ok(WorkflowStepDto::from(m))
     }
+
+    /// Delete a **workflow step** definition. Blocked if any **`workflow_action`** references this step.
+    async fn delete_workflow_step(&self, ctx: &Context<'_>, step_id: ID) -> Result<bool> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_workflow_definitions() {
+            return Err(
+                KabiPayError::Forbidden("missing permission to manage workflows".into()).into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let sid = parse_uuid(&step_id, "stepId")?;
+        workflow_service::delete_workflow_step(&db, tenant_id, sid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
 }

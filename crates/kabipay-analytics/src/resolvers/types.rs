@@ -271,6 +271,40 @@ impl From<kabipay_db_entities::tenant::d0026_integrations::webhook_subscription:
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "WebhookDeliveryLogRow")]
+pub struct WebhookDeliveryLogDto {
+    pub id: ID,
+    pub webhook_subscription_id: ID,
+    pub event_name: Option<String>,
+    pub payload_json: Option<String>,
+    pub http_status: Option<i32>,
+    pub response_body: Option<String>,
+    pub is_success: bool,
+    pub attempt_number: i32,
+    pub delivered_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<kabipay_db_entities::tenant::d0026_integrations::webhook_delivery_log::Model>
+    for WebhookDeliveryLogDto
+{
+    fn from(m: kabipay_db_entities::tenant::d0026_integrations::webhook_delivery_log::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            webhook_subscription_id: ID(m.webhook_subscription_id.to_string()),
+            event_name: m.event_name,
+            payload_json: opt_json_str(&m.payload_json),
+            http_status: m.http_status,
+            response_body: m.response_body,
+            is_success: m.is_success,
+            attempt_number: m.attempt_number,
+            delivered_at: m.delivered_at,
+            created_at: m.created_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "AuditLogRow")]
 pub struct AuditLogDto {
     pub id: ID,

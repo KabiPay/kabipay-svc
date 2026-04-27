@@ -2,10 +2,10 @@
 
 use chrono::Utc;
 use kabipay_common::{KabiPayError, KabiPayResult};
-use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_instance, workflow_step};
+use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_action, workflow_instance, workflow_step};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set,
 };
 use uuid::Uuid;
 
@@ -138,4 +138,43 @@ pub async fn create_workflow_step(
         updated_at: Set(now),
     };
     m.insert(db).await.map_err(KabiPayError::from)
+}
+
+/// Remove a **definition** step when it has no **`workflow_action`** history (FK RESTRICT on `workflow_action.workflow_step_id`).
+/// Active instances with this step as **`current_step_id`** get **`SET NULL`** when the row is deleted.
+pub async fn delete_workflow_step(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    step_id: Uuid,
+) -> KabiPayResult<()> {
+    let step = workflow_step::Entity::find()
+        .filter(workflow_step::Column::TenantId.eq(tenant_id))
+        .filter(workflow_step::Column::Id.eq(step_id))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let _ = step.ok_or_else(|| KabiPayError::NotFound {
+        entity: "workflow_step",
+        id: step_id.to_string(),
+    })?;
+
+    let action_count = workflow_action::Entity::find()
+        .filter(workflow_action::Column::TenantId.eq(tenant_id))
+        .filter(workflow_action::Column::WorkflowStepId.eq(step_id))
+        .count(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    if action_count > 0 {
+        return Err(KabiPayError::Conflict(
+            "cannot delete workflow step that has approval or runtime action history".into(),
+        ));
+    }
+
+    workflow_step::Entity::delete_many()
+        .filter(workflow_step::Column::TenantId.eq(tenant_id))
+        .filter(workflow_step::Column::Id.eq(step_id))
+        .exec(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    Ok(())
 }

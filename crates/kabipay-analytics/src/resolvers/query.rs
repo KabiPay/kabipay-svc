@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::resolvers::types::{
     AuditLogDto, DashboardRowDto, DashboardWidgetRowDto, IntegrationConnectorCatalogDto,
     OutboxEventDto, ReportDefinitionDto, ReportScheduleDto, TenantIntegrationDto,
-    WebhookSubscriptionDto, WorkforceSnapshotDto,
+    WebhookDeliveryLogDto, WebhookSubscriptionDto, WorkforceSnapshotDto,
 };
 use crate::services::analytics_service;
 
@@ -191,6 +191,29 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(WebhookSubscriptionDto::from).collect())
+    }
+
+    /// **HR / directory admins only** — webhook POST attempts (**`webhook_delivery_log`**), newest first.
+    async fn webhook_delivery_logs(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<WebhookDeliveryLogDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_employee_directory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "HR or employee directory access required to view webhook delivery logs".into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = analytics_service::list_webhook_delivery_logs(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(WebhookDeliveryLogDto::from).collect())
     }
 
     /// **HR / directory admins only** — communication/entity audit log (most recent first).
