@@ -1,7 +1,7 @@
 //! Ops-plane SeaORM queries for billing.
 
 use kabipay_common::{KabiPayError, KabiPayResult};
-use kabipay_db_entities::ops::{invoice, payment};
+use kabipay_db_entities::ops::{billing_cycle, invoice, payment};
 use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
@@ -35,6 +35,23 @@ pub async fn list_payments(
         q = q.filter(payment::Column::InvoiceId.eq(inv));
     }
     q.order_by_desc(payment::Column::CreatedAt)
+        .limit(limit)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)
+}
+
+pub async fn list_billing_cycles(
+    db: &DatabaseConnection,
+    tenant_id: Option<Uuid>,
+    limit: u64,
+) -> KabiPayResult<Vec<billing_cycle::Model>> {
+    let limit = limit.clamp(1, 500);
+    let mut q = billing_cycle::Entity::find();
+    if let Some(t) = tenant_id {
+        q = q.filter(billing_cycle::Column::TenantId.eq(t));
+    }
+    q.order_by_desc(billing_cycle::Column::PeriodStart)
         .limit(limit)
         .all(db)
         .await

@@ -21,6 +21,7 @@ pub mod middleware;
 pub mod pagination;
 pub mod subgraph;
 pub mod telemetry;
+pub mod tenant_seed;
 
 pub use context::{
     ClientContext, ClientRequestHints, ClientViewerEmployee, OperatorContext, ScopeType,
@@ -30,3 +31,7 @@ pub use context::{
 pub use env_file::load_dotenv;
 pub use error::{KabiPayError, KabiPayResult};
 pub use pagination::{PageInfo, PageInput};
+pub use subgraph::require_operator_context;
+pub use tenant_seed::{
+    deterministic_tenant_database_row_uuid, deterministic_tenant_uuid,
+};

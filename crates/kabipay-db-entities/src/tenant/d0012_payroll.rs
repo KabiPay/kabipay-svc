@@ -177,3 +177,28 @@ pub mod payslip_component {
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}
 }
+
+pub mod payroll_compliance_setting {
+    use crate::tenant::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "payroll_compliance_setting")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: Uuid,
+        pub tenant_id: Uuid,
+        pub employer_tan: Option<String>,
+        pub employer_legal_name: Option<String>,
+        pub base_salary_component_code: String,
+        pub arrear_salary_component_code: String,
+        pub payslip_header_title: Option<String>,
+        pub payslip_logo_file_storage_id: Option<Uuid>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}

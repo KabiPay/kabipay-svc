@@ -1,12 +1,12 @@
 # kabipay-svc
 
-Rust workspace for **kabipay-auth** (REST, JWT), **~19 async-GraphQL subgraphs** (operator/tenant/billing/HRMS domains), a shared **outbox** background worker, and library crates **kabipay-common** + **kabipay-db-entities** (SeaORM). Each HTTP service listens on its own port; **kabipay-gateway** stitches the subgraphs into one federated GraphQL endpoint (see `kabipay-gateway`).
+Rust workspace for **kabipay-auth** (REST, JWT), **kabipay-ops** (unified ops GraphQL) plus **tenant-plane** async-GraphQL subgraphs (HRMS domains), a shared **outbox** background worker, and library crates **kabipay-common** + **kabipay-db-entities** (SeaORM). Each HTTP service listens on its own port; **kabipay-gateway** stitches the subgraphs into one federated GraphQL endpoint (see `kabipay-gateway`).
 
 ## Architecture
 
 | Layer | Contents |
 |-------|----------|
-| **Control / ops plane** | `kabipay-operator`, `kabipay-tenant`, `kabipay-billing` — `kabipay_ops` schema, subscriptions, operator APIs. |
+| **Control / ops plane** | `kabipay-ops` — single GraphQL service for `kabipay_ops` (tenants, modules, subscriptions, feature flags, operators, billing). |
 | **Client / tenant plane** | Employee, leave, attendance, payroll, tax, benefits, expense, recruitment, performance, lms, succession, compensation, assets, grievance, workflow, notification — one **tenant schema** per customer (`tenant_<uuid>`), resolved via `kabipay_ops.tenant_database`. |
 | **Auth** | `kabipay-auth` — REST login/refresh, HS256 for client and operator planes (separate secrets). |
 | **Async integration** | `kabipay-outbox-worker` — polls `outbox_event` in tenant DBs; **no GraphQL** (CLI process). |
@@ -19,6 +19,7 @@ Rust workspace for **kabipay-auth** (REST, JWT), **~19 async-GraphQL subgraphs**
 | Requirement | Notes |
 |-------------|--------|
 | **Rust** | Stable toolchain (`rustup`, `cargo`). |
+| **Windows MSVC linker** | Default **`windows-msvc`** needs **`link.exe`** — install **[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)** workload **Desktop development with C++**. **`link.exe` not found** → add this before `cargo build`. |
 | **PostgreSQL 16** | **Ops** schema `kabipay_ops` + per-**tenant** schemas; apply migrations with **kabipay-database** (Liquibase). |
 | **Environment** | Copy `.env.example` → `.env`. Managed DBs: TLS + pooler URL as above. |
 | **Node.js** (for scripts) | `provision-tenant.ps1` / `seed-demo-data.ps1` invoke `kabipay-database` (bundled Liquibase + `pg`). |
@@ -83,7 +84,7 @@ After a **release** or **debug** build, from this directory:
 .\scripts\start-subgraphs.ps1
 ```
 
-The script starts **debug** binaries under `target\debug\kabipay-*.exe` on ports **4010–4028**. Unless you set `KABIPAY_DB_POOL_MAX` / `KABIPAY_TENANT_DB_POOL_MAX` in your shell, it defaults both to **1** so many processes can share a small managed Postgres `max_connections` limit (otherwise startup hits “pool timed out” when the DB refuses new connections). Ensure **`kabipay-auth`** is started separately if the UI or gateway needs login.
+The script starts **debug** binaries under `target\debug\kabipay-*.exe`: **ops** on **4010**, tenant modules **4013–4029**. Unless you set `KABIPAY_DB_POOL_MAX` / `KABIPAY_TENANT_DB_POOL_MAX` in your shell, it defaults both to **1** so many processes can share a small managed Postgres `max_connections` limit (otherwise startup hits “pool timed out” when the DB refuses new connections). Ensure **`kabipay-auth`** is started separately if the UI or gateway needs login.
 
 ## Scripts (optional)
 
@@ -101,9 +102,7 @@ Adjust paths inside scripts if **kabipay-database** is not a sibling folder.
 | Crate / binary | Role | Env var | Default port |
 |----------------|------|---------|--------------|
 | `kabipay-auth` | REST (login, tokens) | `KABIPAY_AUTH_PORT` | 4001 |
-| `kabipay-operator` | GraphQL (ops) | `KABIPAY_OPERATOR_PORT` | 4010 |
-| `kabipay-tenant` | GraphQL (ops) | `KABIPAY_TENANT_PORT` | 4011 |
-| `kabipay-billing` | GraphQL (ops) | `KABIPAY_BILLING_PORT` | 4012 |
+| `kabipay-ops` | GraphQL (ops — tenants, operators, billing) | `KABIPAY_OPS_PORT` | 4010 |
 | `kabipay-employee` | GraphQL | `KABIPAY_EMPLOYEE_PORT` | 4013 |
 | `kabipay-leave` | GraphQL | `KABIPAY_LEAVE_PORT` | 4014 |
 | `kabipay-attendance` | GraphQL | `KABIPAY_ATTENDANCE_PORT` | 4015 |
@@ -120,9 +119,10 @@ Adjust paths inside scripts if **kabipay-database** is not a sibling folder.
 | `kabipay-grievance` | GraphQL | `KABIPAY_GRIEVANCE_PORT` | 4026 |
 | `kabipay-workflow` | GraphQL | `KABIPAY_WORKFLOW_PORT` | 4027 |
 | `kabipay-notification` | GraphQL | `KABIPAY_NOTIFICATION_PORT` | 4028 |
+| `kabipay-analytics` | GraphQL | `KABIPAY_ANALYTICS_PORT` | 4029 |
 | `kabipay-outbox-worker` | Background worker (no HTTP) | — | — |
 
-Stitched URLs: `http://127.0.0.1:<port>/graphql`. Canonical list for the gateway: `kabipay-gateway/src/subgraphs.ts`. `start-subgraphs.ps1` starts only the 19 GraphQL executables (4010–4028); run **auth** and **outbox** separately.
+Stitched URLs: `http://127.0.0.1:<port>/graphql`. Canonical list for the gateway: `kabipay-gateway/src/subgraphs.ts`. `start-subgraphs.ps1` starts **ops** plus tenant-module GraphQL executables (4010, 4013–4029); run **auth** and **outbox** separately.
 
 ## Related repositories
 

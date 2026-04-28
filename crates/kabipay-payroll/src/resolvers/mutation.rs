@@ -9,7 +9,10 @@ use kabipay_common::{
 use rust_decimal::Decimal;
 use std::str::FromStr;
 
-use crate::resolvers::types::{CreatePayrollArrearInput, CreatePayrollCycleInput, PayrollArrearDto, PayrollCycleDto};
+use crate::resolvers::types::{
+    CreatePayrollArrearInput, CreatePayrollCycleInput, PayrollArrearDto, PayrollComplianceSettingDto,
+    PayrollCycleDto, UpsertPayrollComplianceSettingInput,
+};
 use crate::services::arrear_service;
 use crate::services::payroll_service;
 use crate::resolvers::query::parse_uuid;
@@ -75,6 +78,44 @@ impl MutationRoot {
         .await
         .map_err(KabiPayError::into_graphql)?;
         Ok(PayrollCycleDto::from(m))
+    }
+
+    /// Upsert tenant employer TAN and legal name for India statutory payroll CSV placeholders.
+    async fn upsert_payroll_compliance_setting(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertPayrollComplianceSettingInput,
+    ) -> Result<PayrollComplianceSettingDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "upsert payroll compliance setting requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let logo = input
+            .payslip_logo_file_storage_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "payslipLogoFileStorageId"))
+            .transpose()?;
+        let m = payroll_service::upsert_payroll_compliance_setting(
+            &db,
+            tenant_id,
+            input.employer_tan,
+            input.employer_legal_name,
+            input.base_salary_component_code,
+            input.arrear_salary_component_code,
+            input.payslip_header_title,
+            logo,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(PayrollComplianceSettingDto::from(m))
     }
 
     /// **Pay run (v2)** — generate missing payslips for a `DRAFT` cycle, then set the cycle to

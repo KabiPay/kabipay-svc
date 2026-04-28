@@ -3,7 +3,7 @@
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, Utc};
 use kabipay_db_entities::tenant::d0013_tax_statutory::{
-    tax_computation, tax_configuration_version, tax_slab,
+    tax_computation, tax_configuration_version, tax_section_definition, tax_slab,
 };
 use kabipay_db_entities::tenant::d0031_tax_proof::tax_proof_line;
 
@@ -162,4 +162,73 @@ impl From<tax_slab::Model> for TaxSlabDto {
             cess_rate: m.cess_rate.map(|d| d.to_string()),
         }
     }
+}
+
+/// Admin-configured IT deduction section (aligns with **`tax_proof_line.section_code`**).
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TaxSectionDefinition")]
+pub struct TaxSectionDefinitionDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub section_code: String,
+    pub section_label: String,
+    /** e.g. `OLD`, `NEW`, `ALL` — filter when offering proof UI for a regime. */
+    pub regime_scope: Option<String>,
+    pub country_code: String,
+    pub display_order: i32,
+    pub is_active: bool,
+    pub max_deduction_amount: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<tax_section_definition::Model> for TaxSectionDefinitionDto {
+    fn from(m: tax_section_definition::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            section_code: m.section_code,
+            section_label: m.section_label,
+            regime_scope: m.regime_scope,
+            country_code: m.country_code,
+            display_order: m.display_order,
+            is_active: m.is_active,
+            max_deduction_amount: m.max_deduction_amount.map(|d| d.to_string()),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertTaxConfigurationVersionInput {
+    /// When set, updates that row (tenant must own it).
+    pub id: Option<ID>,
+    pub fiscal_year: i32,
+    pub regime: Option<String>,
+    pub country_code: String,
+    pub is_active: bool,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertTaxSlabInput {
+    pub id: Option<ID>,
+    pub tax_config_version_id: ID,
+    pub income_from: String,
+    pub income_to: Option<String>,
+    pub tax_rate: Option<String>,
+    pub surcharge_rate: Option<String>,
+    pub cess_rate: Option<String>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertTaxSectionDefinitionInput {
+    pub section_code: String,
+    pub section_label: String,
+    pub regime_scope: Option<String>,
+    /** ISO-ish country marker; omit or blank for **IN**. */
+    pub country_code: Option<String>,
+    pub display_order: Option<i32>,
+    pub is_active: Option<bool>,
+    pub max_deduction_amount: Option<String>,
 }

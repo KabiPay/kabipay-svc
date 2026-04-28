@@ -4,6 +4,7 @@
 
 use anyhow::Context;
 use chrono::{Duration as ChronoDuration, Utc};
+use hmac::{Hmac, Mac};
 use kabipay_common::db::{connect_ops_db, resolve_tenant_db, TenantDbCache, TenantDbConfig};
 use kabipay_common::load_dotenv;
 use kabipay_common::subgraph::{ops_dsn_from_env, tenant_db_config_from_env};
@@ -11,14 +12,18 @@ use kabipay_common::telemetry::init_tracing;
 use kabipay_db_entities::ops::tenant_database;
 use kabipay_db_entities::tenant::d0026_integrations::{webhook_delivery_log, webhook_subscription};
 use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
     FromQueryResult, QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
 use serde_json::json;
+use sha2::Sha256;
 use std::collections::HashSet;
 use std::time::Duration;
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
 
 const STATUS_PENDING: &str = "PENDING";
 const STATUS_PROCESSING: &str = "PROCESSING";
@@ -85,6 +90,75 @@ fn skip_tenant_webhook_subscriptions() -> bool {
     )
 }
 
+/// Optional **platform** signing key for outbound webhook `POST` bodies. Receivers verify
+/// `X-KabiPay-Signature` = `v1=` + hex(HMAC-SHA256(key, "{unix_ts}.{body_utf8}")) with `X-KabiPay-Timestamp`.
+/// Per-tenant secrets from **Insights → Register webhook** are still stored as **SHA-256 only**; use this
+/// env for integrators who share one verification key (or until encrypted per-subscription key storage ships).
+fn outbound_webhook_signing_key() -> Option<Vec<u8>> {
+    if let Ok(h) = std::env::var("OUTBOX_WEBHOOK_SIGNING_SECRET_HEX") {
+        let t = h.trim();
+        if t.is_empty() {
+            return None;
+        }
+        return hex::decode(t).ok();
+    }
+    let raw = std::env::var("OUTBOX_WEBHOOK_SIGNING_SECRET").ok()?;
+    let t = raw.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.as_bytes().to_vec())
+    }
+}
+
+fn webhook_hmac_v1_hex(key: &[u8], unix_ts: i64, body_utf8: &str) -> anyhow::Result<String> {
+    let msg = format!("{unix_ts}.{body_utf8}");
+    let mut mac = HmacSha256::new_from_slice(key).context("HMAC key length")?;
+    mac.update(msg.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn signing_headers_for_body(key: &[u8], body_utf8: &str) -> anyhow::Result<HeaderMap> {
+    let ts = Utc::now().timestamp();
+    let sig = webhook_hmac_v1_hex(key, ts, body_utf8)?;
+    let mut h = HeaderMap::new();
+    h.insert(
+        "X-KabiPay-Timestamp",
+        HeaderValue::from_str(&ts.to_string()).context("timestamp header")?,
+    );
+    h.insert(
+        "X-KabiPay-Signature",
+        HeaderValue::from_str(&format!("v1={sig}")).context("signature header")?,
+    );
+    Ok(h)
+}
+
+async fn post_json_with_hmac(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<(u16, String)> {
+    let body_vec = serde_json::to_vec(body).context("serialize webhook JSON body")?;
+    let body_utf8 = std::str::from_utf8(&body_vec).context("webhook JSON must be UTF-8")?;
+    let signing = outbound_webhook_signing_key()
+        .map(|k| signing_headers_for_body(&k, body_utf8))
+        .transpose()
+        .context("HMAC signing headers")?;
+
+    let mut req = client
+        .post(url)
+        .header(CONTENT_TYPE, "application/json")
+        .body(body_vec);
+    if let Some(headers) = signing {
+        req = req.headers(headers);
+    }
+
+    let res = req.send().await.with_context(|| format!("webhook POST {url}"))?;
+    let status = res.status().as_u16();
+    let text = res.text().await.unwrap_or_default();
+    Ok((status, text))
+}
+
 fn subscription_matches_event(filter: &str, event_type: &str) -> bool {
     let f = filter.trim();
     f == "*" || f.eq_ignore_ascii_case(event_type)
@@ -101,18 +175,6 @@ fn build_delivery_body(model: &outbox_event::Model) -> serde_json::Value {
         "payload": model.payload,
         "created_at": model.created_at,
     })
-}
-
-async fn post_delivery_json(client: &reqwest::Client, url: &str, body: &serde_json::Value) -> anyhow::Result<(u16, String)> {
-    let res = client
-        .post(url)
-        .json(body)
-        .send()
-        .await
-        .with_context(|| format!("webhook POST {url}"))?;
-    let status = res.status().as_u16();
-    let text = res.text().await.unwrap_or_default();
-    Ok((status, text))
 }
 
 async fn record_webhook_delivery(
@@ -300,7 +362,7 @@ async fn deliver_event(tenant_db: &DatabaseConnection, model: &outbox_event::Mod
                 tracing::warn!(subscription_id = %sub.id, "webhook_subscription empty endpoint_url; skip");
                 continue;
             }
-            match post_delivery_json(&client, endpoint, &body).await {
+            match post_json_with_hmac(&client, endpoint, &body).await {
                 Ok((status, text)) => {
                     let ok = status >= 200 && status < 300;
                     if let Err(e) = record_webhook_delivery(
@@ -342,16 +404,12 @@ async fn deliver_event(tenant_db: &DatabaseConnection, model: &outbox_event::Mod
     }
 
     if let Some(url) = webhook_url() {
-        let res = client
-            .post(&url)
-            .json(&body)
-            .send()
+        let (status, text) = post_json_with_hmac(&client, &url, &body)
             .await
             .context("global OUTBOX_WEBHOOK_URL POST")?;
-        if !res.status().is_success() {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_default();
-            anyhow::bail!("OUTBOX_WEBHOOK_URL returned {status}: {text}");
+        let ok = status >= 200 && status < 300;
+        if !ok {
+            anyhow::bail!("OUTBOX_WEBHOOK_URL returned HTTP {status}: {}", text.chars().take(500).collect::<String>());
         }
     }
     Ok(())

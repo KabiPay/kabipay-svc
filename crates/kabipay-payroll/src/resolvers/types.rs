@@ -4,7 +4,7 @@ use async_graphql::{InputObject, SimpleObject, ID};
 use kabipay_db_entities::tenant::d0035_payroll_arrear::payroll_arrear;
 use chrono::{DateTime, NaiveDate, Utc};
 use kabipay_db_entities::tenant::d0012_payroll::{
-    payroll_cycle, payslip, payslip_component, salary_component,
+    payroll_compliance_setting, payroll_cycle, payslip, payslip_component, salary_component,
 };
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -193,6 +193,47 @@ pub struct CreatePayrollArrearInput {
     /// Decimal string, e.g. "5000.00"
     pub amount: String,
     pub reason: Option<String>,
+}
+
+/// Tenant payroll presentation + statutory CSV placeholders (India Form 16 / 24Q prep).
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "PayrollComplianceSetting")]
+pub struct PayrollComplianceSettingDto {
+    pub employer_tan: Option<String>,
+    pub employer_legal_name: Option<String>,
+    /// Salary `salary_component.code` used as the employment **base** line on pay run (`EARNING`).
+    pub base_salary_component_code: String,
+    /// Salary component code used for **`ARREAR`** payout lines (`EARNING`).
+    pub arrear_salary_component_code: String,
+    /// Heading text on payslip when rendered (e.g. company display name).
+    pub payslip_header_title: Option<String>,
+    /// Uploaded logo in **`file_storage`** (tenant-scoped blob); optional.
+    pub payslip_logo_file_storage_id: Option<ID>,
+}
+
+impl From<payroll_compliance_setting::Model> for PayrollComplianceSettingDto {
+    fn from(m: payroll_compliance_setting::Model) -> Self {
+        Self {
+            employer_tan: m.employer_tan,
+            employer_legal_name: m.employer_legal_name,
+            base_salary_component_code: m.base_salary_component_code,
+            arrear_salary_component_code: m.arrear_salary_component_code,
+            payslip_header_title: m.payslip_header_title,
+            payslip_logo_file_storage_id: m
+                .payslip_logo_file_storage_id
+                .map(|u| ID(u.to_string())),
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertPayrollComplianceSettingInput {
+    pub employer_tan: Option<String>,
+    pub employer_legal_name: Option<String>,
+    pub base_salary_component_code: Option<String>,
+    pub arrear_salary_component_code: Option<String>,
+    pub payslip_header_title: Option<String>,
+    pub payslip_logo_file_storage_id: Option<ID>,
 }
 
 /// Create a new tenant payroll period row (`DRAFT`). One cycle per (tenant, month, year) in v1.

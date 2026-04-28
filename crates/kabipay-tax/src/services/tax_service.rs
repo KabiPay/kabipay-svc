@@ -4,7 +4,7 @@ use chrono::Utc;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use kabipay_db_entities::tenant::d0013_tax_statutory::{
-    tax_computation, tax_configuration_version, tax_slab,
+    tax_computation, tax_configuration_version, tax_section_definition, tax_slab,
 };
 use kabipay_db_entities::tenant::d0027_communication_audit::notification;
 use kabipay_db_entities::tenant::d0031_tax_proof::tax_proof_line;
@@ -13,6 +13,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
 };
+use sea_orm::PaginatorTrait;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -156,6 +157,45 @@ const PROOF_PENDING: &str = "PENDING";
 const PROOF_APPROVED: &str = "APPROVED";
 const PROOF_REJECTED: &str = "REJECTED";
 
+/// If the tenant maintains an active **`tax_section_definition`** catalogue, `section_code` must exist there.
+pub async fn enforce_proof_section_catalog_match(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    section_normalized: &str,
+    claimed_amount_for_cap_check: Decimal,
+) -> KabiPayResult<()> {
+    let n = tax_section_definition::Entity::find()
+        .filter(tax_section_definition::Column::TenantId.eq(tenant_id))
+        .filter(tax_section_definition::Column::IsActive.eq(true))
+        .count(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    if n == 0 {
+        return Ok(());
+    }
+    let sc = section_normalized.trim().to_uppercase();
+    let def = tax_section_definition::Entity::find()
+        .filter(tax_section_definition::Column::TenantId.eq(tenant_id))
+        .filter(tax_section_definition::Column::SectionCode.eq(&sc))
+        .filter(tax_section_definition::Column::IsActive.eq(true))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let Some(row) = def else {
+        return Err(KabiPayError::Validation(format!(
+            "sectionCode `{sc}` is not in your tenant tax section catalogue — ask HR to add it or correct the code.",
+        )));
+    };
+    if let Some(cap) = row.max_deduction_amount {
+        if claimed_amount_for_cap_check > cap {
+            return Err(KabiPayError::Validation(format!(
+                "claimed amount exceeds configured cap {cap} for section `{sc}`",
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub async fn list_tax_proof_lines(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -201,6 +241,9 @@ pub async fn submit_tax_proof_line(
     if sc.is_empty() {
         return Err(KabiPayError::Validation("sectionCode is required".into()));
     }
+    enforce_proof_section_catalog_match(db, tenant_id, &sc, declared_amount.max(actual_amount))
+        .await?;
+
     let _ver = tax_configuration_version::Entity::find()
         .filter(tax_configuration_version::Column::Id.eq(tax_config_version_id))
         .filter(tax_configuration_version::Column::TenantId.eq(tenant_id))
@@ -422,6 +465,256 @@ pub async fn recompute_total_deductions_from_approved_proofs(
         am.insert(db).await?;
     }
     Ok(())
+}
+
+/// Admin-editable catalogue matching **`tax_proof_line.section_code`** labels (India IT sections, etc.).
+pub async fn list_tax_section_definitions(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    active_only: bool,
+    limit: u64,
+) -> KabiPayResult<Vec<tax_section_definition::Model>> {
+    let limit = limit.clamp(1, 200);
+    let mut q = tax_section_definition::Entity::find()
+        .filter(tax_section_definition::Column::TenantId.eq(tenant_id));
+    if active_only {
+        q = q.filter(tax_section_definition::Column::IsActive.eq(true));
+    }
+    q.order_by_asc(tax_section_definition::Column::DisplayOrder)
+        .order_by_asc(tax_section_definition::Column::SectionCode)
+        .limit(limit)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)
+}
+
+/// Insert or update a section row by `(tenant_id, section_code)`.
+pub async fn upsert_tax_section_definition(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    section_code: String,
+    section_label: String,
+    regime_scope: Option<String>,
+    country_code: String,
+    display_order: i32,
+    is_active: bool,
+    max_deduction_amount: Option<Decimal>,
+) -> KabiPayResult<tax_section_definition::Model> {
+    let sc = section_code.trim().to_uppercase();
+    if sc.is_empty() {
+        return Err(KabiPayError::Validation(
+            "sectionCode must not be empty".into(),
+        ));
+    }
+    let label = section_label.trim().to_string();
+    if label.is_empty() {
+        return Err(KabiPayError::Validation(
+            "sectionLabel must not be empty".into(),
+        ));
+    }
+    let cc = country_code.trim().to_uppercase();
+    if cc.is_empty() {
+        return Err(KabiPayError::Validation(
+            "countryCode must not be empty".into(),
+        ));
+    }
+    let regime = regime_scope.and_then(|r| {
+        let t = r.trim().to_uppercase();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
+    let now = Utc::now();
+
+    let existing = tax_section_definition::Entity::find()
+        .filter(tax_section_definition::Column::TenantId.eq(tenant_id))
+        .filter(tax_section_definition::Column::SectionCode.eq(&sc))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    if let Some(row) = existing {
+        let id = row.id;
+        let mut am: tax_section_definition::ActiveModel = row.into();
+        am.section_label = Set(label);
+        am.regime_scope = Set(regime);
+        am.country_code = Set(cc);
+        am.display_order = Set(display_order);
+        am.is_active = Set(is_active);
+        am.max_deduction_amount = Set(max_deduction_amount);
+        am.updated_at = Set(now);
+        am.update(db).await.map_err(KabiPayError::from)?;
+        tax_section_definition::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("updated tax_section_definition".into()))
+    } else {
+        let id = Uuid::new_v4();
+        tax_section_definition::ActiveModel {
+            id: Set(id),
+            tenant_id: Set(tenant_id),
+            section_code: Set(sc),
+            section_label: Set(label),
+            regime_scope: Set(regime),
+            country_code: Set(cc),
+            display_order: Set(display_order),
+            is_active: Set(is_active),
+            max_deduction_amount: Set(max_deduction_amount),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db)
+        .await
+        .map_err(KabiPayError::from)?;
+        tax_section_definition::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("inserted tax_section_definition".into()))
+    }
+}
+
+pub async fn upsert_tax_configuration_version(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    id_opt: Option<Uuid>,
+    fiscal_year: i32,
+    regime: Option<String>,
+    country_code: String,
+    is_active: bool,
+) -> KabiPayResult<tax_configuration_version::Model> {
+    let cc = country_code.trim().to_uppercase();
+    if cc.is_empty() {
+        return Err(KabiPayError::Validation("countryCode must not be empty".into()));
+    }
+    let reg = regime.and_then(|r| {
+        let t = r.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
+    let now = Utc::now();
+    if let Some(id) = id_opt {
+        let row = tax_configuration_version::Entity::find()
+            .filter(tax_configuration_version::Column::Id.eq(id))
+            .filter(tax_configuration_version::Column::TenantId.eq(tenant_id))
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::NotFound {
+                entity: "tax_configuration_version",
+                id: id.to_string(),
+            })?;
+        let mut am: tax_configuration_version::ActiveModel = row.into();
+        am.fiscal_year = Set(fiscal_year);
+        am.regime = Set(reg);
+        am.country_code = Set(cc);
+        am.is_active = Set(is_active);
+        am.updated_at = Set(now);
+        am.update(db).await.map_err(KabiPayError::from)?;
+        tax_configuration_version::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("updated tax_configuration_version missing".into()))
+    } else {
+        let id = Uuid::new_v4();
+        tax_configuration_version::ActiveModel {
+            id: Set(id),
+            tenant_id: Set(tenant_id),
+            fiscal_year: Set(fiscal_year),
+            regime: Set(reg),
+            country_code: Set(cc),
+            is_active: Set(is_active),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db)
+        .await
+        .map_err(KabiPayError::from)?;
+        tax_configuration_version::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("inserted tax_configuration_version missing".into()))
+    }
+}
+
+pub async fn upsert_tax_slab(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    id_opt: Option<Uuid>,
+    tax_config_version_id: Uuid,
+    income_from: Decimal,
+    income_to: Option<Decimal>,
+    tax_rate: Option<Decimal>,
+    surcharge_rate: Option<Decimal>,
+    cess_rate: Option<Decimal>,
+) -> KabiPayResult<tax_slab::Model> {
+    let _config = tax_configuration_version::Entity::find()
+        .filter(tax_configuration_version::Column::Id.eq(tax_config_version_id))
+        .filter(tax_configuration_version::Column::TenantId.eq(tenant_id))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "tax_configuration_version",
+            id: tax_config_version_id.to_string(),
+        })?;
+    let now = Utc::now();
+    if let Some(id) = id_opt {
+        let row = tax_slab::Entity::find()
+            .filter(tax_slab::Column::Id.eq(id))
+            .filter(tax_slab::Column::TenantId.eq(tenant_id))
+            .filter(tax_slab::Column::TaxConfigVersionId.eq(tax_config_version_id))
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::NotFound {
+                entity: "tax_slab",
+                id: id.to_string(),
+            })?;
+        let mut am: tax_slab::ActiveModel = row.into();
+        am.income_from = Set(income_from);
+        am.income_to = Set(income_to);
+        am.tax_rate = Set(tax_rate);
+        am.surcharge_rate = Set(surcharge_rate);
+        am.cess_rate = Set(cess_rate);
+        am.updated_at = Set(now);
+        am.update(db).await.map_err(KabiPayError::from)?;
+        tax_slab::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("updated tax_slab missing".into()))
+    } else {
+        let id = Uuid::new_v4();
+        tax_slab::ActiveModel {
+            id: Set(id),
+            tenant_id: Set(tenant_id),
+            tax_config_version_id: Set(tax_config_version_id),
+            income_from: Set(income_from),
+            income_to: Set(income_to),
+            tax_rate: Set(tax_rate),
+            surcharge_rate: Set(surcharge_rate),
+            cess_rate: Set(cess_rate),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(db)
+        .await
+        .map_err(KabiPayError::from)?;
+        tax_slab::Entity::find_by_id(id)
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| KabiPayError::Internal("inserted tax_slab missing".into()))
+    }
 }
 
 async fn tax_proof_notify_employee(

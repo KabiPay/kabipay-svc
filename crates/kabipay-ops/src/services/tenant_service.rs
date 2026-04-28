@@ -22,11 +22,14 @@ pub async fn list_tenants(
 pub async fn list_modules(
     db: &DatabaseConnection,
     limit: u64,
+    include_inactive: bool,
 ) -> KabiPayResult<Vec<module::Model>> {
     let limit = limit.clamp(1, 500);
-    module::Entity::find()
-        .filter(module::Column::IsActive.eq(true))
-        .order_by_asc(module::Column::DisplayOrder)
+    let mut q = module::Entity::find();
+    if !include_inactive {
+        q = q.filter(module::Column::IsActive.eq(true));
+    }
+    q.order_by_asc(module::Column::DisplayOrder)
         .limit(limit)
         .all(db)
         .await

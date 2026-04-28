@@ -11,7 +11,9 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{PayrollArrearDto, PayrollCycleDto, PayslipDetailDto, SalaryComponentDto};
+use crate::resolvers::types::{
+    PayrollArrearDto, PayrollComplianceSettingDto, PayrollCycleDto, PayslipDetailDto, SalaryComponentDto,
+};
 use crate::services::arrear_service;
 use crate::services::payroll_service;
 
@@ -55,6 +57,27 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(PayrollCycleDto::from).collect())
+    }
+
+    /// Employer TAN and legal name for India statutory payroll CSVs (optional row per tenant).
+    /// Same RBAC as statutory CSV export.
+    async fn payroll_compliance_setting(&self, ctx: &Context<'_>) -> Result<Option<PayrollComplianceSettingDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll compliance setting requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let row = payroll_service::find_payroll_compliance_setting(&db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(row.map(PayrollComplianceSettingDto::from))
     }
 
     /// One payslip with `lines` = `payslip_component` rows.
@@ -194,6 +217,157 @@ impl QueryRoot {
         }
         let db = tenant_db(ctx, tenant_id).await?;
         payroll_service::payroll_bank_transfer_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India — NEFT / bulk salary credit prep (CSV).** Multi-beneficiary style columns (IFSC, account,
+    /// narration, optional value date from cycle). Same RBAC as other payroll bank/statutory exports.
+    async fn payroll_india_bulk_neft_credit_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll bulk credit export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::payroll_india_bulk_neft_credit_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India FY — per-employee aggregated payslip totals (CSV).** Rolls up all payslips in cycles whose
+    /// India FY matches `fyStartYear`. Stub for annual compliance prep (e.g. Form 16). Same RBAC as TDS export.
+    async fn india_fy_payroll_employee_totals_csv(
+        &self,
+        ctx: &Context<'_>,
+        fy_start_year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll FY totals export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_fy_payroll_employee_totals_csv(&db, tenant_id, fy_start_year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India FY quarter — employee totals (CSV).** Same measures as **`indiaFyPayrollEmployeeTotalsCsv`**, scoped to FY **Q1**–**Q4** months only — quarterly reconciliation prep (e.g. 24Q), not filed layout.
+    async fn india_fy_quarter_payroll_employee_totals_csv(
+        &self,
+        ctx: &Context<'_>,
+        fy_start_year: i32,
+        quarter: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll FY quarter totals export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_fy_quarter_payroll_employee_totals_csv(
+            &db,
+            tenant_id,
+            fy_start_year,
+            quarter,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India FY — Form 16 Part B prep (stub CSV).** Aggregates with Part B–oriented headers; blank employer TAN/name placeholders.
+    async fn india_form16_part_b_fy_prep_stub_csv(
+        &self,
+        ctx: &Context<'_>,
+        fy_start_year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll Form 16 Part B prep export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_form16_part_b_fy_prep_stub_csv(&db, tenant_id, fy_start_year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India — Form 24Q salary payment month stub (CSV).** Annex-style **prep** for reconciliations —
+    /// not TRACES **Form 24Q** upload; `gross` is a notional Section **192** salary base; TDS from payslip.
+    async fn india_form24q_salary_payment_monthly_stub_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll Form 24Q stub export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_form24q_salary_payment_monthly_stub_csv(&db, tenant_id, month, year)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    /// **India — EPFO ECR-style monthly contribution prep (CSV).** UAN, capped EPF wage stub, EE/ER from
+    /// payslip — not official Unified EPF **ECR** file format.
+    async fn india_epf_monthly_ecr_prep_stub_csv(
+        &self,
+        ctx: &Context<'_>,
+        month: i32,
+        year: i32,
+    ) -> Result<String> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "payroll EPF ECR prep export requires payroll:statutory_export or HR / tenant admin role"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        payroll_service::india_epf_monthly_ecr_prep_stub_csv(&db, tenant_id, month, year)
             .await
             .map_err(KabiPayError::into_graphql)
     }

@@ -6,7 +6,7 @@
 use rust_decimal::Decimal;
 
 /// EPF: employee 12% and employer 12% on the same **PF wage** = `min(basic, ₹15,000)`.
-const PF_WAGE_CEILING: &str = "15000.00";
+pub const PF_WAGE_CEILING_INR: &str = "15000.00";
 /// ESI applies when `gross` is at or below the statutory ceiling (simplified; excludes certain components in practice).
 const ESI_GROSS_CEILING: &str = "21000.00";
 /// Employee ESI 0.75%, employer 3.25% on gross.
@@ -44,7 +44,7 @@ pub fn compute(gross: Decimal, tds: Option<Decimal>) -> (IndiaStatutoryStub, Dec
     let tds_m = tds
         .unwrap_or(Decimal::ZERO)
         .round_dp(2);
-    let ceiling_pf = dec(PF_WAGE_CEILING);
+    let ceiling_pf = dec(PF_WAGE_CEILING_INR);
     let pf_wage = gross.min(ceiling_pf);
     let r12 = dec("0.12");
     let pf_employee = (pf_wage * r12).round_dp(2);

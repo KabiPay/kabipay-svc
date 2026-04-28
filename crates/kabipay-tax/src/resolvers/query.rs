@@ -8,7 +8,8 @@ use kabipay_common::{
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    TaxComputationDto, TaxConfigurationVersionDto, TaxProofLineDto, TaxSlabDto,
+    TaxComputationDto, TaxConfigurationVersionDto, TaxProofLineDto, TaxSectionDefinitionDto,
+    TaxSlabDto,
 };
 use crate::services::tax_service;
 
@@ -40,6 +41,24 @@ impl QueryRoot {
         Ok(rows
             .into_iter()
             .map(TaxConfigurationVersionDto::from)
+            .collect())
+    }
+
+    /// Deduction sections catalogue (**`tax_proof_line.section_code`**) — admin-maintained labels & caps.
+    async fn tax_section_definitions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = true)] active_only: bool,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TaxSectionDefinitionDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = tax_service::list_tax_section_definitions(&db, tenant_id, active_only, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows
+            .into_iter()
+            .map(TaxSectionDefinitionDto::from)
             .collect())
     }
 

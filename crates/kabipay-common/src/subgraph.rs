@@ -12,13 +12,13 @@
 //! Resolvers obtain the caller's tenant id and SeaORM connection via the
 //! [`require_tenant_id`] and [`tenant_db`] helpers in this module.
 
-use crate::context::{ClientClaims, ClientRequestHints};
+use crate::context::{ClientClaims, ClientRequestHints, OperatorClaims, OperatorContext};
 use crate::db::{
     apply_postgres_ssl_mode_to_url, connect_ops_db, resolve_tenant_db, TenantDbCache,
     TenantDbConfig,
 };
 use crate::error::{KabiPayError, KabiPayResult};
-use crate::jwt::{decode_client_jwt, extract_bearer, jwt_secret_from_env};
+use crate::jwt::{decode_client_jwt, decode_operator_jwt, extract_bearer, jwt_secret_from_env};
 use crate::telemetry::init_tracing;
 use async_graphql::{Context, ObjectType, Schema, SubscriptionType};
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
@@ -188,6 +188,15 @@ pub fn ops_db<'a>(ctx: &'a Context<'a>) -> async_graphql::Result<&'a DatabaseCon
     })
 }
 
+/// Operator-only GraphQL resolvers must call this first.
+pub fn require_operator_context<'a>(
+    ctx: &'a Context<'a>,
+) -> async_graphql::Result<&'a OperatorContext> {
+    ctx.data_opt::<OperatorContext>().ok_or_else(|| {
+        KabiPayError::Forbidden("operator JWT required (kabipay-ops)".into()).into_graphql()
+    })
+}
+
 /// Configuration for [`serve_subgraph`].
 pub struct SubgraphConfig<'a> {
     /// Service name used by `init_tracing`.
@@ -284,11 +293,22 @@ where
         client_ip: client_ip_from_headers(&headers),
     };
     req = req.data(hints);
-    if let Some((tenant_id, claims)) = extract_tenant_identity(&headers)? {
-        req = req.data(TenantId(tenant_id));
-        if let Some(c) = claims {
-            req = req.data(c);
+    match extract_request_identity(&headers)? {
+        RequestIdentity::Client { tenant_id, claims } => {
+            req = req.data(TenantId(tenant_id));
+            if let Some(c) = claims {
+                req = req.data(c);
+            }
         }
+        RequestIdentity::Operator(claims) => {
+            let ctx = OperatorContext {
+                operator_user_id: claims.sub,
+                roles: claims.roles,
+                tenant_access: claims.tenant_access,
+            };
+            req = req.data(ctx);
+        }
+        RequestIdentity::None => {}
     }
     Ok(schema.execute(req).await.into())
 }
@@ -300,20 +320,22 @@ pub async fn graphql_playground() -> impl IntoResponse {
     ))
 }
 
-/// Pull the caller's tenant id (and optionally full `ClientClaims`) from a
-/// request. Tries, in order:
+enum RequestIdentity {
+    Client {
+        tenant_id: Uuid,
+        claims: Option<ClientClaims>,
+    },
+    Operator(OperatorClaims),
+    None,
+}
+
+/// Resolve who is calling the subgraph.
 ///
-/// 1. `Authorization: Bearer <jwt>` — a valid `kabipay-client` token
-///    wins; its `tenant_id` claim is authoritative.
-/// 2. `x-tenant-id: <uuid>` — dev fallback, rejected when
-///    `KABIPAY_REQUIRE_AUTH=1`.
-///
-/// Returns `Ok(None)` when neither is present so the GraphQL layer can
-/// still serve introspection / federation queries that don't need a
-/// tenant. Returns an HTTP error for malformed tokens / headers.
-fn extract_tenant_identity(
-    headers: &HeaderMap,
-) -> Result<Option<(Uuid, Option<ClientClaims>)>, (StatusCode, String)> {
+/// 1. `Authorization: Bearer <jwt>` — `kabipay-client` → tenant + optional claims;
+///    `kabipay-ops` → operator context (no tenant id).
+/// 2. No bearer: when `KABIPAY_REQUIRE_AUTH=1`, anonymous. Otherwise `x-tenant-id`
+///    sets a dev tenant id without JWT claims.
+fn extract_request_identity(headers: &HeaderMap) -> Result<RequestIdentity, (StatusCode, String)> {
     if let Some(auth) = headers.get(header::AUTHORIZATION) {
         let auth_str = auth.to_str().map_err(|_| {
             (
@@ -328,22 +350,27 @@ fn extract_tenant_identity(
             )
         })?;
         let secret = jwt_secret_from_env();
-        let claims = decode_client_jwt(token, &secret).map_err(|e| {
-            (
-                StatusCode::UNAUTHORIZED,
-                format!("invalid client token: {e}"),
-            )
-        })?;
-        return Ok(Some((claims.tenant_id, Some(claims))));
+        if let Ok(claims) = decode_client_jwt(token, &secret) {
+            return Ok(RequestIdentity::Client {
+                tenant_id: claims.tenant_id,
+                claims: Some(claims),
+            });
+        }
+        if let Ok(op) = decode_operator_jwt(token, &secret) {
+            return Ok(RequestIdentity::Operator(op));
+        }
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "invalid bearer token (not a valid client or operator JWT)".to_string(),
+        ));
     }
 
     if std::env::var("KABIPAY_REQUIRE_AUTH").as_deref() == Ok("1") {
-        // Production mode: no token → no tenant. Don't allow x-tenant-id shortcut.
-        return Ok(None);
+        return Ok(RequestIdentity::None);
     }
 
     let Some(raw) = headers.get(TENANT_HEADER) else {
-        return Ok(None);
+        return Ok(RequestIdentity::None);
     };
     let raw = raw.to_str().map_err(|_| {
         (
@@ -357,5 +384,8 @@ fn extract_tenant_identity(
             format!("{TENANT_HEADER} is not a UUID: {e}"),
         )
     })?;
-    Ok(Some((tenant_id, None)))
+    Ok(RequestIdentity::Client {
+        tenant_id,
+        claims: None,
+    })
 }

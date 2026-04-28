@@ -30,3 +30,4 @@ jsonwebtoken.workspace = true
 dashmap.workspace = true
 dotenvy.workspace = true
 kabipay-db-entities.workspace = true
+sha1.workspace = true

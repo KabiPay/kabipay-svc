@@ -1752,30 +1752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kabipay-billing"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-graphql",
- "async-graphql-axum",
- "axum",
- "chrono",
- "dotenvy",
- "kabipay-common",
- "kabipay-db-entities",
- "sea-orm",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "kabipay-common"
 version = "0.1.0"
 dependencies = [
@@ -1791,6 +1767,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
+ "sha1",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
@@ -1991,10 +1968,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "kabipay-operator"
+name = "kabipay-ops"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-graphql",
  "async-graphql-axum",
  "axum",
@@ -2002,9 +1980,9 @@ dependencies = [
  "dotenvy",
  "kabipay-common",
  "kabipay-db-entities",
+ "rust_decimal",
  "sea-orm",
  "serde",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tower 0.4.13",
@@ -2020,12 +1998,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "hex",
+ "hmac",
  "kabipay-common",
  "kabipay-db-entities",
  "reqwest",
  "sea-orm",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2142,30 +2123,6 @@ dependencies = [
  "kabipay-common",
  "kabipay-db-entities",
  "rust_decimal",
- "sea-orm",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "kabipay-tenant"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-graphql",
- "async-graphql-axum",
- "axum",
- "chrono",
- "dotenvy",
- "kabipay-common",
- "kabipay-db-entities",
  "sea-orm",
  "serde",
  "serde_json",

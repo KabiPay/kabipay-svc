@@ -103,6 +103,33 @@ pub mod statutory_filing {
     pub enum Relation {}
 }
 
+/// Tenant catalogue of Income Tax deduction **section** codes (`tax_proof_line.section_code`) labels & caps.
+pub mod tax_section_definition {
+    use crate::tenant::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "tax_section_definition")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: Uuid,
+        pub tenant_id: Uuid,
+        pub section_code: String,
+        pub section_label: String,
+        pub regime_scope: Option<String>,
+        pub country_code: String,
+        pub display_order: i32,
+        pub is_active: bool,
+        pub max_deduction_amount: Option<Decimal>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}
+
 pub mod form_16 {
     use crate::tenant::prelude::*;
 

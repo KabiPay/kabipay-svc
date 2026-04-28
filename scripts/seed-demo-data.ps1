@@ -752,7 +752,7 @@ INSERT INTO "$Schema".workforce_snapshot (
 ) VALUES (
     '$WorkforceSnapId', '$TenantId', CURRENT_DATE,
     1, 1, 0, 0, 1, 24.0000, 0.0000
-) ON CONFLICT (tenant_id, snapshot_date) DO NOTHING;
+) ON CONFLICT (id) DO NOTHING;
 "@
 Invoke-TenantSql -Label "0024 analytics (report, dashboard, schedule, snapshot)" -Sql $SqlAnalytics
 
