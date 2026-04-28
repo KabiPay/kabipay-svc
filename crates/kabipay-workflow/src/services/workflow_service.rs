@@ -4,8 +4,8 @@ use chrono::Utc;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0025_workflow::{workflow, workflow_action, workflow_instance, workflow_step};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -177,4 +177,99 @@ pub async fn delete_workflow_step(
         .await
         .map_err(KabiPayError::from)?;
     Ok(())
+}
+
+/// Re-assign **`sequence_order`** (1 … *n*) in the order given. Uses a temporary range so **`uq_workflow_step_workflow_seq`** is never violated mid-update.
+///
+/// **`ordered_step_ids`** must contain **every** step id for **`workflow_id`**, each **once**.
+pub async fn reorder_workflow_steps(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    workflow_id: Uuid,
+    ordered_step_ids: Vec<Uuid>,
+) -> KabiPayResult<Vec<workflow_step::Model>> {
+    if get_workflow(db, tenant_id, workflow_id).await?.is_none() {
+        return Err(KabiPayError::NotFound {
+            entity: "workflow",
+            id: workflow_id.to_string(),
+        });
+    }
+
+    let existing = workflow_step::Entity::find()
+        .filter(workflow_step::Column::TenantId.eq(tenant_id))
+        .filter(workflow_step::Column::WorkflowId.eq(workflow_id))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    if existing.is_empty() {
+        return if ordered_step_ids.is_empty() {
+            Ok(vec![])
+        } else {
+            Err(KabiPayError::Validation(
+                "orderedStepIds must be empty when the workflow has no steps".into(),
+            ))
+        };
+    }
+
+    let mut claimed = std::collections::HashMap::with_capacity(existing.len());
+    for s in existing {
+        claimed.insert(s.id, s);
+    }
+
+    let n = claimed.len();
+    if ordered_step_ids.len() != n {
+        return Err(KabiPayError::Validation(format!(
+            "ordered step count {} does not match workflow step count {}",
+            ordered_step_ids.len(),
+            n
+        )));
+    }
+
+    let mut seen = std::collections::HashSet::with_capacity(n);
+    for id in &ordered_step_ids {
+        if !seen.insert(id) {
+            return Err(KabiPayError::Validation("duplicate step id in orderedStepIds".into()));
+        }
+        if !claimed.contains_key(id) {
+            return Err(KabiPayError::Validation(format!(
+                "step {id} is not part of this workflow"
+            )));
+        }
+    }
+
+    let txn = db.begin().await.map_err(KabiPayError::from)?;
+    let max_seq = claimed
+        .values()
+        .map(|s| s.sequence_order)
+        .max()
+        .unwrap_or(0);
+    let temp_base = max_seq.max(1) + 10_000;
+
+    for (i, sid) in ordered_step_ids.iter().enumerate() {
+        let step_model = claimed
+            .remove(sid)
+            .expect("validated contains id");
+        let mut am = step_model.into_active_model();
+        am.sequence_order = Set(temp_base + i as i32);
+        am.update(&txn).await.map_err(KabiPayError::from)?;
+    }
+
+    for (i, sid) in ordered_step_ids.iter().enumerate() {
+        let seq = i as i32 + 1;
+        let row = workflow_step::Entity::find_by_id(*sid)
+            .one(&txn)
+            .await
+            .map_err(KabiPayError::from)?
+            .ok_or_else(|| {
+                KabiPayError::Internal("workflow_step missing after reorder phase 1".into())
+            })?;
+        let mut am = row.into_active_model();
+        am.sequence_order = Set(seq);
+        am.update(&txn).await.map_err(KabiPayError::from)?;
+    }
+
+    txn.commit().await.map_err(KabiPayError::from)?;
+
+    list_workflow_steps(db, tenant_id, workflow_id).await
 }

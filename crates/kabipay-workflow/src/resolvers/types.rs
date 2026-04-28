@@ -60,7 +60,7 @@ impl From<workflow_instance::Model> for WorkflowInstanceDto {
     }
 }
 
-/// One node in a workflow graph (read-only; editing is a future “designer”).
+/// One node in a workflow graph (**reorder** + **delete step** exposed to admins; richer designer later).
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "WorkflowStep")]
 pub struct WorkflowStepDto {

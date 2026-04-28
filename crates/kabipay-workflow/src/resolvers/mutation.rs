@@ -6,8 +6,9 @@ use kabipay_common::{
     KabiPayError,
 };
 use uuid::Uuid;
-
-use crate::resolvers::types::{CreateWorkflowInput, CreateWorkflowStepInput, WorkflowDto, WorkflowStepDto};
+use crate::resolvers::types::{
+    CreateWorkflowInput, CreateWorkflowStepInput, WorkflowDto, WorkflowStepDto,
+};
 use crate::services::workflow_service;
 
 pub struct MutationRoot;
@@ -110,5 +111,32 @@ impl MutationRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(true)
+    }
+
+    /// Re-assign **`sequenceOrder`** across all steps for **`workflow_id`**. **`step_ids_ordered`** must list each step exactly once (same set as persisted).
+    async fn reorder_workflow_steps(
+        &self,
+        ctx: &Context<'_>,
+        workflow_id: ID,
+        step_ids_ordered: Vec<ID>,
+    ) -> Result<Vec<WorkflowStepDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_workflow_definitions() {
+            return Err(
+                KabiPayError::Forbidden("missing permission to manage workflows".into()).into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let wf_id = parse_uuid(&workflow_id, "workflowId")?;
+        let ordered = step_ids_ordered
+            .iter()
+            .map(|id| parse_uuid(id, "stepIdsOrdered"))
+            .collect::<Result<Vec<_>>>()?;
+        let rows =
+            workflow_service::reorder_workflow_steps(&db, tenant_id, wf_id, ordered)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(WorkflowStepDto::from).collect())
     }
 }
