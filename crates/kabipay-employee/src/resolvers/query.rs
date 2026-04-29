@@ -10,7 +10,8 @@ use kabipay_common::{
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    ClearanceChecklistItemDto, DepartmentDto, DesignationDto, DocumentTypeDto, EmployeeDocumentDto,
+    ClearanceChecklistItemDto, DepartmentDto, DesignationDto, DocumentTypeDto,
+    EmploymentHistoryRecordDto, EmployeeDocumentDto,
     EmployeeDto, FnfSettlementDto, OnboardingChecklistItemDto, OrgChartRowDto, SeparationDto,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -21,8 +22,8 @@ use crate::resolvers::scope::{
 };
 use crate::services::document_file_service::{self, download_claims};
 use crate::services::{
-    document_service, employee_service, offboarding_fnf_service, onboarding_service, org_service,
-    separation_service,
+    document_service, employee_service, employment_history_service, offboarding_fnf_service,
+    onboarding_service, org_service, separation_service,
 };
 use crate::entities::d0029_file_storage::file_storage;
 
@@ -64,6 +65,34 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(models.into_iter().map(EmployeeDto::from).collect())
+    }
+
+    /// Compensation rows driving payroll base salary (`employment_history`), newest first.
+    /// Requires **`employee:write`** or **`payroll:statutory_export`** (or HR / tenant admin role).
+    async fn employment_history_records(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: ID,
+        #[graphql(default = 24)] limit: u64,
+    ) -> Result<Vec<EmploymentHistoryRecordDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_employee_directory() && !claims.can_export_payroll_statutory() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "employment history requires employee:write or payroll:statutory_export (or HR admin)"
+                        .into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let rows = employment_history_service::list_for_employee(&db, tenant_id, eid, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(EmploymentHistoryRecordDto::from).collect())
     }
 
     /// Master list of document / policy types defined for the tenant.

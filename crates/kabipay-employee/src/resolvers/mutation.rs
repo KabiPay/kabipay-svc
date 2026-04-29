@@ -13,14 +13,17 @@ use uuid::Uuid;
 use crate::resolvers::scope::assert_employee_in_data_scope;
 use crate::resolvers::types::{
     ClearanceChecklistItemDto, CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto,
-    FnfSettlementDto, OnboardingChecklistItemDto, SeparationDto, SubmitSeparationInput,
-    UpdateEmployeeInput, UploadEmployeeDocumentInput, UpsertFnfSettlementInput,
+    EmploymentHistoryRecordDto, FnfSettlementDto, OnboardingChecklistItemDto, SeparationDto,
+    SetEmployeeCompensationInput, SubmitSeparationInput, UpdateEmployeeInput,
+    UploadEmployeeDocumentInput, UpsertFnfSettlementInput,
 };
 use crate::services::document_file_service;
 use crate::services::employee_service::{self, EmployeePatch, NewEmployee};
+use crate::services::employment_history_service;
 use crate::services::offboarding_fnf_service;
 use crate::services::onboarding_service;
 use crate::services::separation_service;
+use rust_decimal::Decimal;
 
 use crate::entities::d0008_document_system::document_type;
 use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
@@ -132,6 +135,35 @@ impl MutationRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(EmployeeDto::from(m))
+    }
+
+    /// HR: set or update monthly salary for an employee (`employment_history`), effective from a date.
+    async fn set_employee_compensation(
+        &self,
+        ctx: &Context<'_>,
+        input: SetEmployeeCompensationInput,
+    ) -> Result<EmploymentHistoryRecordDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&input.employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let monthly = Decimal::from_str_exact(input.monthly_salary.trim()).map_err(|e| {
+            KabiPayError::Validation(format!("monthlySalary: invalid decimal ({e})")).into_graphql()
+        })?;
+        let m = employment_history_service::set_monthly_salary(
+            &db,
+            tenant_id,
+            claims.sub,
+            eid,
+            monthly,
+            input.effective_from,
+            input.change_reason,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(EmploymentHistoryRecordDto::from(m))
     }
 
     /// Upload a file to local `KABIPAY_LOCAL_FILE_ROOT` and attach an `employee_document` row

@@ -4,13 +4,15 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use kabipay_common::{KabiPayError, KabiPayResult};
+use kabipay_common::{
+    file_download_token::{file_download_claims, public_employee_file_download_url},
+    KabiPayError, KabiPayResult,
+};
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait, TransactionTrait,
 };
 use uuid::Uuid;
 
-use super::file_token::{sign_download_token, FileDownloadClaims};
 use super::object_store::{
     FileStorageMode, S3CompatSettings, ensure_tenant_bucket, s3_operator_for_bucket, s3_put, s3_read,
     tenant_bucket_name, PROVIDER_S3_COMPAT,
@@ -273,20 +275,11 @@ pub fn download_claims(
     file_storage_id: Uuid,
     mime_type: Option<String>,
     ttl_seconds: i64,
-) -> FileDownloadClaims {
-    FileDownloadClaims {
-        tenant_id,
-        file_storage_id,
-        exp: Utc::now().timestamp() + ttl_seconds,
-        mime_type,
-    }
+) -> kabipay_common::file_download_token::FileDownloadClaims {
+    file_download_claims(tenant_id, file_storage_id, mime_type, ttl_seconds)
 }
 
 /// Build a time-limited HMAC download URL (HTTP GET) for a stored file.
-pub fn public_download_url(claims: &FileDownloadClaims) -> String {
-    let base = std::env::var("KABIPAY_EMPLOYEE_PUBLIC_BASE")
-        .unwrap_or_else(|_| "http://127.0.0.1:4013".to_string());
-    let token = sign_download_token(claims);
-    let encoded = urlencoding::encode(&token);
-    format!("{base}/files/employee-document?token={encoded}")
+pub fn public_download_url(claims: &kabipay_common::file_download_token::FileDownloadClaims) -> String {
+    public_employee_file_download_url(claims)
 }

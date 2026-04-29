@@ -29,7 +29,7 @@ mod services;
 use resolvers::{MutationRoot, QueryRoot};
 
 use services::document_file_service;
-use services::file_token::verify_download_token;
+use kabipay_common::file_download_token::verify_download_token;
 
 #[derive(Clone, serde::Deserialize)]
 struct FileQuery {

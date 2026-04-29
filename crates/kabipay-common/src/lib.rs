@@ -15,6 +15,7 @@ pub mod context;
 pub mod db;
 pub mod env_file;
 pub mod error;
+pub mod file_download_token;
 pub mod ids;
 pub mod jwt;
 pub mod middleware;

@@ -6,9 +6,12 @@ use kabipay_common::{
         data_scope_from_context, resolve_employee_scope_filter, resolve_viewer_employee,
     },
     context::SCOPE_RES_EMPLOYEE,
+    file_download_token::{file_download_claims, public_employee_file_download_url},
     subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
+use kabipay_db_entities::tenant::d0029_file_storage::file_storage;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
 use crate::resolvers::types::{
@@ -59,25 +62,65 @@ impl QueryRoot {
         Ok(rows.into_iter().map(PayrollCycleDto::from).collect())
     }
 
-    /// Employer TAN and legal name for India statutory payroll CSVs (optional row per tenant).
-    /// Same RBAC as statutory CSV export.
+    /// Employer TAN, payslip branding, component codes (optional row per tenant).
+    /// Readable by any authenticated client so employees can render branded payslips; **`upsertPayrollComplianceSetting`**
+    /// remains restricted to statutory-export / HR roles.
     async fn payroll_compliance_setting(&self, ctx: &Context<'_>) -> Result<Option<PayrollComplianceSettingDto>> {
-        let claims = require_client_claims(ctx)?;
-        if !claims.can_export_payroll_statutory() {
-            return Err(
-                KabiPayError::Forbidden(
-                    "payroll compliance setting requires payroll:statutory_export or HR / tenant admin role"
-                        .into(),
-                )
-                .into_graphql(),
-            );
-        }
+        require_client_claims(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let row = payroll_service::find_payroll_compliance_setting(&db, tenant_id)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(row.map(PayrollComplianceSettingDto::from))
+    }
+
+    /// HMAC URL for **`GET /files/employee-document?token=…`** on **kabipay-employee** (same as document downloads).
+    /// Only issued when **`fileStorageId`** equals **`payroll_compliance_setting.payslip_logo_file_storage_id`**.
+    async fn payslip_logo_signed_read_url(
+        &self,
+        ctx: &Context<'_>,
+        file_storage_id: ID,
+        #[graphql(default = 600)] ttl_seconds: i32,
+    ) -> Result<String> {
+        require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let wanted = parse_uuid(&file_storage_id, "fileStorageId")?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let compliance = payroll_service::find_payroll_compliance_setting(&db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let Some(row) = compliance else {
+            return Err(
+                KabiPayError::Validation("payroll compliance setting is not configured for this tenant".into())
+                    .into_graphql(),
+            );
+        };
+        let Some(logo_id) = row.payslip_logo_file_storage_id else {
+            return Err(
+                KabiPayError::Validation("tenant has no payslip logo configured".into()).into_graphql(),
+            );
+        };
+        if logo_id != wanted {
+            return Err(
+                KabiPayError::Forbidden("file id does not match the tenant payslip logo".into()).into_graphql(),
+            );
+        }
+        let fs_row = file_storage::Entity::find_by_id(logo_id)
+            .filter(file_storage::Column::TenantId.eq(tenant_id))
+            .one(&db)
+            .await
+            .map_err(|e: sea_orm::DbErr| KabiPayError::from(e).into_graphql())?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "fileStorage",
+                    id: logo_id.to_string(),
+                }
+                .into_graphql()
+            })?;
+        let ttl = ttl_seconds.clamp(60, 86_400) as i64;
+        let claims = file_download_claims(tenant_id, logo_id, fs_row.mime_type.clone(), ttl);
+        Ok(public_employee_file_download_url(&claims))
     }
 
     /// One payslip with `lines` = `payslip_component` rows.

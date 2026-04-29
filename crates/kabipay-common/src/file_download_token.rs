@@ -1,13 +1,14 @@
-//! Short-TTL HMAC token for unauthenticated `GET` download of a tenant file
-//! (same secret as JWT for dev simplicity; split in production if needed).
+//! HMAC-signed, short-TTL tokens for unauthenticated HTTP GET file downloads
+//! (same secret as JWT in dev; split in production if needed).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use kabipay_common::jwt::jwt_secret_from_env;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
+
+use crate::jwt::jwt_secret_from_env;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -45,4 +46,28 @@ pub fn verify_download_token(token: &str) -> Option<FileDownloadClaims> {
         return None;
     }
     Some(c)
+}
+
+/// Claims for a time-limited download (used by GraphQL resolvers before signing).
+pub fn file_download_claims(
+    tenant_id: Uuid,
+    file_storage_id: Uuid,
+    mime_type: Option<String>,
+    ttl_seconds: i64,
+) -> FileDownloadClaims {
+    FileDownloadClaims {
+        tenant_id,
+        file_storage_id,
+        exp: chrono::Utc::now().timestamp() + ttl_seconds,
+        mime_type,
+    }
+}
+
+/// Full URL for `GET /files/employee-document?token=…` on **kabipay-employee** (port from env).
+pub fn public_employee_file_download_url(claims: &FileDownloadClaims) -> String {
+    let base = std::env::var("KABIPAY_EMPLOYEE_PUBLIC_BASE")
+        .unwrap_or_else(|_| "http://127.0.0.1:4013".to_string());
+    let token = sign_download_token(claims);
+    let encoded = urlencoding::encode(&token);
+    format!("{base}/files/employee-document?token={encoded}")
 }

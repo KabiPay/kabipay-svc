@@ -4,7 +4,7 @@ use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::entities::d0006_org_hierarchy::{department, designation};
-use crate::entities::d0007_employee_core::employee;
+use crate::entities::d0007_employee_core::{employee, employment_history};
 use crate::entities::d0008_document_system::{document_type, employee_document};
 use crate::entities::d0017_onboarding_offboarding::{
     clearance_checklist, fnf_settlement, onboarding_checklist, separation,
@@ -206,6 +206,48 @@ pub struct UpdateEmployeeInput {
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<ID>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "EmploymentHistoryRecord")]
+pub struct EmploymentHistoryRecordDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    /// Monthly amount used as base gross for pay run (maps to `employment_history.salary`).
+    pub monthly_salary: Option<String>,
+    pub effective_from: NaiveDate,
+    pub effective_to: Option<NaiveDate>,
+    pub change_reason: Option<String>,
+    pub changed_by: Option<ID>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct SetEmployeeCompensationInput {
+    pub employee_id: ID,
+    /// Monthly gross (BASIC) for payroll — must match Decimal string (e.g. `65000` or `65000.00`).
+    pub monthly_salary: String,
+    pub effective_from: NaiveDate,
+    pub change_reason: Option<String>,
+}
+
+impl From<employment_history::Model> for EmploymentHistoryRecordDto {
+    fn from(m: employment_history::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            monthly_salary: m.salary.map(|d| d.to_string()),
+            effective_from: m.effective_from,
+            effective_to: m.effective_to,
+            change_reason: m.change_reason,
+            changed_by: m.changed_by.map(|u| ID(u.to_string())),
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone, Debug)]
