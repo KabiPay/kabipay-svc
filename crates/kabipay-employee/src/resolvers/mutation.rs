@@ -10,18 +10,19 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
-use crate::resolvers::scope::assert_employee_in_data_scope;
+use crate::resolvers::scope::{assert_employee_in_data_scope, require_tenant_rbac_admin};
 use crate::resolvers::types::{
     ClearanceChecklistItemDto, CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto,
     EmploymentHistoryRecordDto, FnfSettlementDto, OnboardingChecklistItemDto, SeparationDto,
     SetEmployeeCompensationInput, SubmitSeparationInput, UpdateEmployeeInput,
-    UploadEmployeeDocumentInput, UpsertFnfSettlementInput,
+    UploadEmployeeDocumentInput, UpsertFnfSettlementInput, PermissionScopeAssignmentInput,
 };
 use crate::services::document_file_service;
 use crate::services::employee_service::{self, EmployeePatch, NewEmployee};
 use crate::services::employment_history_service;
 use crate::services::offboarding_fnf_service;
 use crate::services::onboarding_service;
+use crate::services::rbac_admin_service;
 use crate::services::separation_service;
 use rust_decimal::Decimal;
 
@@ -422,5 +423,68 @@ impl MutationRoot {
         .await
         .map_err(KabiPayError::into_graphql)?;
         Ok(ClearanceChecklistItemDto::from(m))
+    }
+
+    /// Replace `role_permission` rows for a role (full matrix row).
+    async fn set_role_permissions(
+        &self,
+        ctx: &Context<'_>,
+        role_id: ID,
+        permission_ids: Vec<ID>,
+    ) -> Result<bool> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rid = parse_uuid(&role_id, "roleId")?;
+        let mut pids = Vec::with_capacity(permission_ids.len());
+        for id in permission_ids {
+            pids.push(parse_uuid(&id, "permissionId")?);
+        }
+        rbac_admin_service::set_role_permissions(&db, tenant_id, rid, pids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
+
+    /// Replace `user_role` rows for a user. Caller must re-login to refresh JWT claims.
+    async fn set_user_roles(
+        &self,
+        ctx: &Context<'_>,
+        user_id: ID,
+        role_ids: Vec<ID>,
+    ) -> Result<bool> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let uid = parse_uuid(&user_id, "userId")?;
+        let mut rids = Vec::with_capacity(role_ids.len());
+        for id in role_ids {
+            rids.push(parse_uuid(&id, "roleId")?);
+        }
+        rbac_admin_service::set_user_roles(&db, tenant_id, uid, rids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
+
+    /// Replace `permission_scope` rows for a role (list-filter scopes).
+    async fn set_role_permission_scopes(
+        &self,
+        ctx: &Context<'_>,
+        role_id: ID,
+        scopes: Vec<PermissionScopeAssignmentInput>,
+    ) -> Result<bool> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rid = parse_uuid(&role_id, "roleId")?;
+        let tuples: Vec<(String, String, String)> = scopes
+            .into_iter()
+            .map(|s| (s.resource, s.action, s.scope_type))
+            .collect();
+        rbac_admin_service::set_role_permission_scopes(&db, tenant_id, rid, tuples)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
     }
 }

@@ -13,17 +13,19 @@ use crate::resolvers::types::{
     ClearanceChecklistItemDto, DepartmentDto, DesignationDto, DocumentTypeDto,
     EmploymentHistoryRecordDto, EmployeeDocumentDto,
     EmployeeDto, FnfSettlementDto, OnboardingChecklistItemDto, OrgChartRowDto, SeparationDto,
+    TenantCatalogPermissionDto, TenantDirectoryRoleDto, TenantDirectoryUserDto,
+    TenantPermissionScopeDto,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::entities::d0008_document_system::employee_document;
 use crate::resolvers::scope::{
-    assert_employee_in_data_scope, data_scope_employee, resolve_viewer_employee,
+    assert_employee_in_data_scope, data_scope_employee, require_tenant_rbac_admin, resolve_viewer_employee,
 };
 use crate::services::document_file_service::{self, download_claims};
 use crate::services::{
     document_service, employee_service, employment_history_service, offboarding_fnf_service,
-    onboarding_service, org_service, separation_service,
+    onboarding_service, org_service, rbac_admin_service, separation_service,
 };
 use crate::entities::d0029_file_storage::file_storage;
 
@@ -367,6 +369,91 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(ClearanceChecklistItemDto::from).collect())
+    }
+
+    /// Tenant users for RBAC assignment (`role:manage` / HR admin).
+    async fn tenant_directory_users(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TenantDirectoryUserDto>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = rbac_admin_service::list_users(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TenantDirectoryUserDto::from).collect())
+    }
+
+    /// Tenant-defined roles.
+    async fn tenant_directory_roles(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TenantDirectoryRoleDto>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = rbac_admin_service::list_roles(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TenantDirectoryRoleDto::from).collect())
+    }
+
+    /// Permission catalog rows in the tenant schema (for matrix editing).
+    async fn tenant_catalog_permissions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 300)] limit: u64,
+    ) -> Result<Vec<TenantCatalogPermissionDto>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = rbac_admin_service::list_permissions(&db, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TenantCatalogPermissionDto::from).collect())
+    }
+
+    /// Permission UUIDs granted to a role (`role_permission`).
+    async fn permission_ids_for_role(&self, ctx: &Context<'_>, role_id: ID) -> Result<Vec<ID>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rid = parse_uuid(&role_id, "roleId")?;
+        let ids = rbac_admin_service::permission_ids_for_role(&db, tenant_id, rid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(ids.into_iter().map(|u| ID(u.to_string())).collect())
+    }
+
+    /// Role UUIDs assigned to a user (`user_role`).
+    async fn role_ids_for_user(&self, ctx: &Context<'_>, user_id: ID) -> Result<Vec<ID>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let uid = parse_uuid(&user_id, "userId")?;
+        let ids = rbac_admin_service::role_ids_for_user(&db, tenant_id, uid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(ids.into_iter().map(|u| ID(u.to_string())).collect())
+    }
+
+    /// Data scopes (`permission_scope`) for list filtering (employee / leave / expense / …).
+    async fn permission_scopes_for_role(
+        &self,
+        ctx: &Context<'_>,
+        role_id: ID,
+    ) -> Result<Vec<TenantPermissionScopeDto>> {
+        let _ = require_tenant_rbac_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rid = parse_uuid(&role_id, "roleId")?;
+        let rows = rbac_admin_service::scopes_for_role(&db, tenant_id, rid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TenantPermissionScopeDto::from).collect())
     }
 }
 

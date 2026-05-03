@@ -9,6 +9,7 @@ use crate::entities::d0008_document_system::{document_type, employee_document};
 use crate::entities::d0017_onboarding_offboarding::{
     clearance_checklist, fnf_settlement, onboarding_checklist, separation,
 };
+use kabipay_db_entities::tenant::d0005_auth_rbac::{permission, permission_scope, role, user};
 
 /// Federated `Employee` type. `id` is the canonical cross-service identifier (Gap A).
 #[derive(SimpleObject, Clone, Debug)]
@@ -409,4 +410,89 @@ impl From<employee::Model> for EmployeeDto {
             updated_at: m.updated_at,
         }
     }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TenantDirectoryUser")]
+pub struct TenantDirectoryUserDto {
+    pub id: ID,
+    pub email: String,
+    pub is_active: bool,
+}
+
+impl From<user::Model> for TenantDirectoryUserDto {
+    fn from(m: user::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            email: m.email,
+            is_active: m.is_active,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TenantDirectoryRole")]
+pub struct TenantDirectoryRoleDto {
+    pub id: ID,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_system_role: bool,
+}
+
+impl From<role::Model> for TenantDirectoryRoleDto {
+    fn from(m: role::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            name: m.name,
+            description: m.description,
+            is_system_role: m.is_system_role,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TenantCatalogPermission")]
+pub struct TenantCatalogPermissionDto {
+    pub id: ID,
+    pub resource: String,
+    pub action: String,
+    pub description: Option<String>,
+}
+
+impl From<permission::Model> for TenantCatalogPermissionDto {
+    fn from(m: permission::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            resource: m.resource,
+            action: m.action,
+            description: m.description,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TenantPermissionScopeAssignment")]
+pub struct TenantPermissionScopeDto {
+    pub id: ID,
+    pub resource: String,
+    pub action: String,
+    pub scope_type: String,
+}
+
+impl From<permission_scope::Model> for TenantPermissionScopeDto {
+    fn from(m: permission_scope::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            resource: m.resource,
+            action: m.action,
+            scope_type: m.scope_type,
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct PermissionScopeAssignmentInput {
+    pub resource: String,
+    pub action: String,
+    pub scope_type: String,
 }

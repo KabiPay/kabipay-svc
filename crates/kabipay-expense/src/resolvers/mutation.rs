@@ -56,13 +56,6 @@ impl MutationRoot {
 
     async fn approve_expense(&self, ctx: &Context<'_>, expense_id: ID) -> Result<ExpenseDto> {
         let claims = require_client_claims(ctx)?;
-        if !claims.can_approve_expense() {
-            return Err(KabiPayError::Forbidden(
-                "expense approve permission required (expense:approve or HR/tenant admin role)"
-                    .into(),
-            )
-            .into_graphql());
-        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let id = parse_uuid(&expense_id, "expenseId")?;
@@ -79,13 +72,6 @@ impl MutationRoot {
         reason: Option<String>,
     ) -> Result<ExpenseDto> {
         let claims = require_client_claims(ctx)?;
-        if !claims.can_approve_expense() {
-            return Err(KabiPayError::Forbidden(
-                "expense approve permission required (expense:approve or HR/tenant admin role)"
-                    .into(),
-            )
-            .into_graphql());
-        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let id = parse_uuid(&expense_id, "expenseId")?;
@@ -139,13 +125,6 @@ impl MutationRoot {
         travel_request_id: ID,
     ) -> Result<TravelRequestDto> {
         let claims = require_client_claims(ctx)?;
-        if !claims.can_approve_expense() {
-            return Err(KabiPayError::Forbidden(
-                "travel approve uses the same RBAC as expenses (expense:approve or HR/tenant admin)"
-                    .into(),
-            )
-            .into_graphql());
-        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let id = parse_uuid(&travel_request_id, "travelRequestId")?;
@@ -162,13 +141,6 @@ impl MutationRoot {
         reason: Option<String>,
     ) -> Result<TravelRequestDto> {
         let claims = require_client_claims(ctx)?;
-        if !claims.can_approve_expense() {
-            return Err(KabiPayError::Forbidden(
-                "travel reject uses the same RBAC as expenses (expense:approve or HR/tenant admin)"
-                    .into(),
-            )
-            .into_graphql());
-        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let id = parse_uuid(&travel_request_id, "travelRequestId")?;

@@ -13,8 +13,8 @@ use kabipay_common::{
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    AttendanceDto, AttendancePunchPolicyDto, HolidayEntryDto, PunchDaySummaryDto, ShiftDto,
-    TimesheetEntryDto,
+    AttendanceDto, AttendancePunchPolicyDto, HolidayCalendarDto, HolidayDayDto, HolidayEntryDto,
+    PunchDaySummaryDto, ShiftDto, TimesheetEntryDto,
 };
 use crate::services::{attendance_service, punch_policy};
 
@@ -145,6 +145,52 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(TimesheetEntryDto::from).collect())
+    }
+
+    /// Admin: list holiday calendars (tenant). Requires leave configuration permission.
+    async fn holiday_calendars(
+        &self,
+        ctx: &Context<'_>,
+        year: Option<i32>,
+        #[graphql(default = 50)] limit: u64,
+    ) -> Result<Vec<HolidayCalendarDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_leave_configuration() {
+            return Err(
+                KabiPayError::Forbidden("holiday calendar admin requires leave configuration permission".into())
+                    .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = attendance_service::list_holiday_calendars(&db, tenant_id, year, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(HolidayCalendarDto::from).collect())
+    }
+
+    /// Admin: holidays in a calendar. Requires leave configuration permission.
+    async fn holidays_in_calendar(
+        &self,
+        ctx: &Context<'_>,
+        calendar_id: ID,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<HolidayDayDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_leave_configuration() {
+            return Err(
+                KabiPayError::Forbidden("holiday admin requires leave configuration permission".into())
+                    .into_graphql(),
+            );
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let cid = parse_uuid(&calendar_id, "calendarId")?;
+        let rows =
+            attendance_service::list_holidays_in_calendar(&db, tenant_id, cid, limit)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(HolidayDayDto::from).collect())
     }
 }
 

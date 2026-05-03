@@ -124,6 +124,8 @@ pub mod leave_request {
         pub status: String,
         pub reason: Option<String>,
         pub rejection_reason: Option<String>,
+        /// Reference only (URL or ticket id) until FILE_STORAGE is wired.
+        pub supporting_document_reference: Option<String>,
         pub approved_by: Option<Uuid>,
         pub workflow_instance_id: Option<Uuid>,
         pub applied_at: DateTimeUtc,

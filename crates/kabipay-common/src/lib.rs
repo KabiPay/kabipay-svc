@@ -23,6 +23,7 @@ pub mod pagination;
 pub mod subgraph;
 pub mod telemetry;
 pub mod tenant_seed;
+pub mod workflow_approval;
 
 pub use context::{
     ClientContext, ClientRequestHints, ClientViewerEmployee, OperatorContext, ScopeType,

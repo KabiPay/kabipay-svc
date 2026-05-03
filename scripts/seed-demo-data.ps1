@@ -154,16 +154,31 @@ $DepartmentId        = New-DeterministicUuid -Seed "${Schema}:dept:engineering"
 $DesignationId       = New-DeterministicUuid -Seed "${Schema}:desig:software-engineer"
 $UserId              = New-DeterministicUuid -Seed "${Schema}:user:demo"
 $EmployeeId          = New-DeterministicUuid -Seed "${Schema}:employee:demo"
+$ManagerUserId       = New-DeterministicUuid -Seed "${Schema}:user:line-manager"
+$ManagerEmployeeId   = New-DeterministicUuid -Seed "${Schema}:employee:line-manager"
+$TenantAdminUserId   = New-DeterministicUuid -Seed "${Schema}:user:tenant-admin"
+$StaffUserId         = New-DeterministicUuid -Seed "${Schema}:user:staff"
+$StaffEmployeeId     = New-DeterministicUuid -Seed "${Schema}:employee:staff"
 $RoleHrAdminId       = New-DeterministicUuid -Seed "${Schema}:role:HR_ADMIN"
+$RoleTenantAdminId   = New-DeterministicUuid -Seed "${Schema}:role:TENANT_ADMIN"
+$RoleLineManagerId   = New-DeterministicUuid -Seed "${Schema}:role:LINE_MANAGER"
 $PermEmployeeWriteId = New-DeterministicUuid -Seed "${Schema}:perm:employee:write"
 $PermLeaveApproveId  = New-DeterministicUuid -Seed "${Schema}:perm:leave:approve"
+$PermLeaveManageId   = New-DeterministicUuid -Seed "${Schema}:perm:leave:manage"
 $PermExpenseApproveId = New-DeterministicUuid -Seed "${Schema}:perm:expense:approve"
 $PermTaxProofApproveId = New-DeterministicUuid -Seed "${Schema}:perm:tax:approve"
 $PermPayrollStatutoryId = New-DeterministicUuid -Seed "${Schema}:perm:payroll:statutory_export"
+$PermAttendancePunchPolicyId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:punch_policy"
+$PermWorkflowManageId = New-DeterministicUuid -Seed "${Schema}:perm:workflow:manage"
+$PermRoleManageId = New-DeterministicUuid -Seed "${Schema}:perm:role:manage"
 $ScopeScopeEmployeeAllId  = New-DeterministicUuid -Seed "${Schema}:permission_scope:employee:write:ALL"
 $ScopeScopeLeaveAllId   = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:ALL"
+$ScopeScopeLeaveTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:TEAM:LM"
 $ScopeScopeExpenseAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:ALL"
+$ScopeScopeExpenseTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:TEAM:LM"
 $ScopeScopeAttendanceAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:read:ALL"
+$ScopeAttendancePunchPolicyAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:punch_policy:ALL"
+$ScopeWorkflowManageAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:workflow:manage:ALL"
 
 # Shift / attendance (0010)
 $ShiftDayId          = New-DeterministicUuid -Seed "${Schema}:shift:day"
@@ -174,6 +189,19 @@ $AttendanceTodayId   = New-DeterministicUuid -Seed "${Schema}:attendance:today"
 $LeaveTypeClId       = New-DeterministicUuid -Seed "${Schema}:leave_type:cl"
 $LeaveTypeSlId       = New-DeterministicUuid -Seed "${Schema}:leave_type:sl"
 $LeaveRequest1Id     = New-DeterministicUuid -Seed "${Schema}:leave_request:1"
+$LeaveTypePtoId      = New-DeterministicUuid -Seed "${Schema}:leave_type:pto"
+$LeavePolicyClId     = New-DeterministicUuid -Seed "${Schema}:leave_policy:cl"
+$LeavePolicySlId     = New-DeterministicUuid -Seed "${Schema}:leave_policy:sl"
+$LeavePolicyPtoId    = New-DeterministicUuid -Seed "${Schema}:leave_policy:pto"
+$HolCalCoId          = New-DeterministicUuid -Seed "${Schema}:holiday_calendar:company"
+$HolRepublicId       = New-DeterministicUuid -Seed "${Schema}:holiday:republic"
+$HolIndependenceId   = New-DeterministicUuid -Seed "${Schema}:holiday:independence"
+$LeaveApprovedMgrId  = New-DeterministicUuid -Seed "${Schema}:leave_request:approved_mgr"
+$LbDemoClId          = New-DeterministicUuid -Seed "${Schema}:leave_balance:demo:cl"
+$LbDemoSlId          = New-DeterministicUuid -Seed "${Schema}:leave_balance:demo:sl"
+$LbDemoPtoId         = New-DeterministicUuid -Seed "${Schema}:leave_balance:demo:pto"
+$LbMgrClId           = New-DeterministicUuid -Seed "${Schema}:leave_balance:mgr:cl"
+$LbStaffClId         = New-DeterministicUuid -Seed "${Schema}:leave_balance:staff:cl"
 
 # Payroll (0012)
 $SalaryCompBasicId   = New-DeterministicUuid -Seed "${Schema}:salary_component:basic"
@@ -246,6 +274,7 @@ $OutboxEventPendId   = New-DeterministicUuid -Seed "${Schema}:outbox:demo_pendin
 # Workflow (0025)
 $WorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:leave-approval"
 $WorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:leave:1"
+$WorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:leave:2"
 $WorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:1"
 # Expense claim workflow (entity_type EXPENSE — M32), two-step demo on seeded `$ExpenseId`
 $ExpenseWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:expense-approval"
@@ -264,6 +293,8 @@ $ModulePayrollId     = New-DeterministicUuid -Seed "ops:module:PAYROLL"
 $ModuleRecruitId     = New-DeterministicUuid -Seed "ops:module:RECRUIT"
 $ModuleExpenseId     = New-DeterministicUuid -Seed "ops:module:EXPENSE"
 $ModuleTaxId         = New-DeterministicUuid -Seed "ops:module:TAX"
+$ModuleAttendanceId  = New-DeterministicUuid -Seed "ops:module:ATTENDANCE"
+$ModuleWorkflowId    = New-DeterministicUuid -Seed "ops:module:WORKFLOW"
 $OpRoleAdminId       = New-DeterministicUuid -Seed "ops:operator_role:ADMIN"
 $OpRoleSupportId     = New-DeterministicUuid -Seed "ops:operator_role:SUPPORT"
 $OpUserId            = New-DeterministicUuid -Seed "ops:operator_user:admin"
@@ -274,6 +305,8 @@ $InvoiceId           = New-DeterministicUuid -Seed "ops:invoice:${TenantId}:1"
 $PaymentId           = New-DeterministicUuid -Seed "ops:payment:${TenantId}:1"
 $SubLeaveId          = New-DeterministicUuid -Seed "ops:subscription:${TenantId}:LEAVE"
 $SubPayrollId        = New-DeterministicUuid -Seed "ops:subscription:${TenantId}:PAYROLL"
+$SubAttendanceId     = New-DeterministicUuid -Seed "ops:subscription:${TenantId}:ATTENDANCE"
+$SubWorkflowId       = New-DeterministicUuid -Seed "ops:subscription:${TenantId}:WORKFLOW"
 
 Write-Host "=== Tenant plane UUIDs ==="
 Write-Host "Department   : $DepartmentId"
@@ -326,6 +359,24 @@ INSERT INTO "$Schema".employee (
     CURRENT_DATE
 ) ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
+VALUES ('$ManagerUserId', '$TenantId', 'manager@kabipay.local', '$PasswordHash', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".employee (
+    id, tenant_id, user_id, department_id, designation_id,
+    employee_code, first_name, last_name, employment_type, status,
+    date_of_joining, reporting_manager_id
+) VALUES (
+    '$ManagerEmployeeId', '$TenantId', '$ManagerUserId', '$DepartmentId', '$DesignationId',
+    'EMP0002', 'Line', 'Manager', 'PERMANENT', 'ACTIVE',
+    CURRENT_DATE, NULL
+) ON CONFLICT (id) DO NOTHING;
+
+UPDATE "$Schema".employee
+SET reporting_manager_id = '$ManagerEmployeeId', updated_at = NOW()
+WHERE id = '$EmployeeId' AND tenant_id = '$TenantId';
+
 INSERT INTO "$Schema".employee_pan (
     id, tenant_id, employee_id, pan_number, is_primary, is_verified
 ) VALUES (
@@ -343,12 +394,42 @@ INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is
 VALUES ('$RoleHrAdminId', '$TenantId', 'HR_ADMIN', 'Employee directory admin', true, false)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
+VALUES ('$RoleLineManagerId', '$TenantId', 'LINE_MANAGER', 'People manager — hierarchical approvals (team-scoped lists)', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
+VALUES ('$RoleTenantAdminId', '$TenantId', 'TENANT_ADMIN', 'Tenant administrator — admin shell + HR configuration', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
+VALUES ('$TenantAdminUserId', '$TenantId', 'tenant-admin@kabipay.local', '$PasswordHash', true, false)
+ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true;
+
+INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
+VALUES ('$StaffUserId', '$TenantId', 'staff@kabipay.local', '$PasswordHash', true, false)
+ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true;
+
+INSERT INTO "$Schema".employee (
+    id, tenant_id, user_id, department_id, designation_id,
+    employee_code, first_name, last_name, employment_type, status,
+    date_of_joining, reporting_manager_id
+) VALUES (
+    '$StaffEmployeeId', '$TenantId', '$StaffUserId', '$DepartmentId', '$DesignationId',
+    'EMP0003', 'Staff', 'Member', 'PERMANENT', 'ACTIVE',
+    CURRENT_DATE, '$ManagerEmployeeId'
+) ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermEmployeeWriteId', 'employee', 'write', '$ModuleEmployeeId', 'Create and update employee records')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermLeaveApproveId', 'leave', 'approve', '$ModuleLeaveId', 'Approve or reject leave requests')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermLeaveManageId', 'leave', 'manage', '$ModuleLeaveId', 'Configure leave types, policies, balances, and holiday calendars')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
@@ -361,6 +442,18 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermPayrollStatutoryId', 'payroll', 'statutory_export', '$ModulePayrollId', 'Export statutory payroll reports (e.g. India TDS summary CSV)')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermAttendancePunchPolicyId', 'attendance', 'punch_policy', '$ModuleAttendanceId', 'Configure geofence / IP punch policy for the tenant')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermWorkflowManageId', 'workflow', 'manage', '$ModuleWorkflowId', 'Create or edit workflow definitions and steps')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermRoleManageId', 'role', 'manage', '$ModuleEmployeeId', 'Assign tenant roles, permissions, and data scopes')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
@@ -383,9 +476,53 @@ INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermPayrollStatutoryId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermAttendancePunchPolicyId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermWorkflowManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermRoleManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermLeaveManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermLeaveApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermExpenseApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
 INSERT INTO "$Schema".user_role (user_id, role_id)
 VALUES ('$UserId', '$RoleHrAdminId')
 ON CONFLICT (user_id, role_id) DO NOTHING;
+
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$ManagerUserId', '$RoleLineManagerId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+SELECT '$RoleTenantAdminId', rp.permission_id
+FROM "$Schema".role_permission rp
+WHERE rp.role_id = '$RoleHrAdminId'
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$TenantAdminUserId', '$RoleTenantAdminId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+INSERT INTO "$Schema".permission_scope (id, tenant_id, role_id, resource, action, scope_type)
+SELECT gen_random_uuid(), '$TenantId', '$RoleTenantAdminId', ps.resource, ps.action, ps.scope_type
+FROM "$Schema".permission_scope ps
+WHERE ps.tenant_id = '$TenantId' AND ps.role_id = '$RoleHrAdminId'
+ON CONFLICT (role_id, resource, action) DO NOTHING;
 
 -- Gap H: data scope for list filters (employee / leave) — ALL for admin role
 INSERT INTO "$Schema".permission_scope (id, tenant_id, role_id, resource, action, scope_type)
@@ -393,7 +530,11 @@ VALUES
   ('$ScopeScopeEmployeeAllId', '$TenantId', '$RoleHrAdminId', 'employee', 'write', 'ALL'),
   ('$ScopeScopeLeaveAllId',    '$TenantId', '$RoleHrAdminId', 'leave',   'approve', 'ALL'),
   ('$ScopeScopeExpenseAllId',  '$TenantId', '$RoleHrAdminId', 'expense', 'approve', 'ALL'),
-  ('$ScopeScopeAttendanceAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'read', 'ALL')
+  ('$ScopeScopeAttendanceAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'read', 'ALL'),
+  ('$ScopeAttendancePunchPolicyAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'punch_policy', 'ALL'),
+  ('$ScopeWorkflowManageAllId', '$TenantId', '$RoleHrAdminId', 'workflow', 'manage', 'ALL'),
+  ('$ScopeScopeLeaveTeamLmId', '$TenantId', '$RoleLineManagerId', 'leave', 'approve', 'TEAM'),
+  ('$ScopeScopeExpenseTeamLmId', '$TenantId', '$RoleLineManagerId', 'expense', 'approve', 'TEAM')
 ON CONFLICT (role_id, resource, action) DO NOTHING;
 "@
 Invoke-TenantSql -Label "0000 foundation (department, designation, user, employee)" -Sql $SqlFoundation
@@ -430,7 +571,8 @@ INSERT INTO "$Schema".leave_type (
     sandwich_rule, half_day_allowed, requires_document
 ) VALUES
     ('$LeaveTypeClId', '$TenantId', 'Casual Leave', 'CL', true,  true,  5, false, true,  false),
-    ('$LeaveTypeSlId', '$TenantId', 'Sick Leave',   'SL', true,  false, 0, false, true,  true)
+    ('$LeaveTypeSlId', '$TenantId', 'Sick Leave',   'SL', true,  false, 0, false, true,  true),
+    ('$LeaveTypePtoId', '$TenantId', 'Paid Time Off', 'PTO', true, false, 0, false, true, false)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".leave_request (
@@ -444,6 +586,63 @@ INSERT INTO "$Schema".leave_request (
 ) ON CONFLICT (id) DO NOTHING;
 "@
 Invoke-TenantSql -Label "0011 leave (types + request)" -Sql $SqlLeave
+
+$SqlLeaveExtra = @"
+INSERT INTO "$Schema".leave_policy (
+    id, tenant_id, leave_type_id, applicable_to,
+    annual_entitlement, accrual_frequency, accrual_days,
+    max_consecutive_days, min_notice_days, created_at, updated_at
+) VALUES
+    ('$LeavePolicyClId', '$TenantId', '$LeaveTypeClId', 'ALL', 12, NULL, NULL, 10, 1, NOW(), NOW()),
+    ('$LeavePolicySlId', '$TenantId', '$LeaveTypeSlId', 'ALL', 10, NULL, NULL, 7, 0, NOW(), NOW()),
+    ('$LeavePolicyPtoId', '$TenantId', '$LeaveTypePtoId', 'ALL', NULL, 'MONTHLY', 1.2500, 5, 2, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".holiday_calendar (
+    id, tenant_id, location_id, name, year, created_at, updated_at
+) VALUES (
+    '$HolCalCoId', '$TenantId', NULL, 'Company — India', EXTRACT(YEAR FROM CURRENT_DATE)::int, NOW(), NOW()
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".holiday (
+    id, calendar_id, holiday_date, name, "type", created_at, updated_at
+) VALUES
+    ('$HolRepublicId', '$HolCalCoId',
+        (EXTRACT(YEAR FROM CURRENT_DATE)::text || '-01-26')::date,
+        'Republic Day', 'PUBLIC', NOW(), NOW()),
+    ('$HolIndependenceId', '$HolCalCoId',
+        (EXTRACT(YEAR FROM CURRENT_DATE)::text || '-08-15')::date,
+        'Independence Day', 'PUBLIC', NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".leave_balance (
+    id, tenant_id, employee_id, leave_type_id, year,
+    entitled_days, used_days, pending_days, carried_forward_days, balance_days,
+    created_at, updated_at
+) VALUES
+    ('$LbDemoClId', '$TenantId', '$EmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        12, 0, 2, 0, 10, NOW(), NOW()),
+    ('$LbDemoSlId', '$TenantId', '$EmployeeId', '$LeaveTypeSlId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        10, 0, 0, 0, 10, NOW(), NOW()),
+    ('$LbDemoPtoId', '$TenantId', '$EmployeeId', '$LeaveTypePtoId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        15, 0, 0, 0, 15, NOW(), NOW()),
+    ('$LbMgrClId', '$TenantId', '$ManagerEmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        12, 0, 0, 0, 12, NOW(), NOW()),
+    ('$LbStaffClId', '$TenantId', '$StaffEmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        12, 0, 0, 0, 12, NOW(), NOW())
+ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING;
+
+INSERT INTO "$Schema".leave_request (
+    id, tenant_id, employee_id, leave_type_id,
+    from_date, to_date, days_requested,
+    is_half_day, status, reason, applied_at, workflow_instance_id
+) VALUES (
+    '$LeaveApprovedMgrId', '$TenantId', '$ManagerEmployeeId', '$LeaveTypeClId',
+    CURRENT_DATE - INTERVAL '12 days', CURRENT_DATE - INTERVAL '10 days', 3,
+    false, 'APPROVED', 'Seeded approved leave (team calendar demo)', NOW(), NULL
+) ON CONFLICT (id) DO NOTHING;
+"@
+Invoke-TenantSql -Label "0011b leave (policies, holidays, balances, approved sample)" -Sql $SqlLeaveExtra
 
 # =====================================================================
 # 4. PAYROLL (0012)
@@ -788,8 +987,30 @@ INSERT INTO "$Schema".workflow_step (
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
     '$WorkflowStep1Id', '$TenantId', '$WorkflowId', 1, 'Manager approval',
-    NULL, NULL, false, NULL
-) ON CONFLICT (id) DO NOTHING;
+    'REPORTING_MANAGER', NULL, false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$WorkflowStep2Id', '$TenantId', '$WorkflowId', 2, 'HR approval',
+    'ROLE', '$RoleHrAdminId', false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
 
 INSERT INTO "$Schema".workflow_instance (
     id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id
@@ -814,16 +1035,30 @@ INSERT INTO "$Schema".workflow_step (
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
     '$ExpenseWorkflowStep1Id', '$TenantId', '$ExpenseWorkflowId', 1, 'Manager approval',
-    NULL, NULL, false, NULL
-) ON CONFLICT (id) DO NOTHING;
+    'REPORTING_MANAGER', NULL, false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
 
 INSERT INTO "$Schema".workflow_step (
     id, tenant_id, workflow_id, sequence_order, step_name,
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
-    '$ExpenseWorkflowStep2Id', '$TenantId', '$ExpenseWorkflowId', 2, 'Finance verification',
-    NULL, NULL, false, NULL
-) ON CONFLICT (id) DO NOTHING;
+    '$ExpenseWorkflowStep2Id', '$TenantId', '$ExpenseWorkflowId', 2, 'HR / Finance verification',
+    'ROLE', '$RoleHrAdminId', false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
 
 INSERT INTO "$Schema".workflow_instance (
     id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id
@@ -877,7 +1112,9 @@ INSERT INTO kabipay_ops.module (id, code, name, category, description, is_active
     ('$ModulePayrollId',  'PAYROLL',     'Payroll Processing',  'HR',   'Cycles, payslips, compliance.',   true, 30, false),
     ('$ModuleRecruitId',  'RECRUITMENT', 'Talent Acquisition',  'HR',   'Job postings and applications.',  true, 40, false),
     ('$ModuleExpenseId',  'EXPENSE',     'Expense Management',  'HR',   'Claims, policies, reimbursements.', true, 25, false),
-    ('$ModuleTaxId',      'TAX',         'Tax & Statutory',     'HR',   'Regimes, proofs, TDS, filings.',    true, 22, false)
+    ('$ModuleTaxId',      'TAX',         'Tax & Statutory',     'HR',   'Regimes, proofs, TDS, filings.',    true, 22, false),
+    ('$ModuleAttendanceId', 'ATTENDANCE', 'Attendance & Time',   'HR',   'Shifts, punches, attendance.',       true, 18, false),
+    ('$ModuleWorkflowId', 'WORKFLOW',    'Workflows',           'CORE', 'Approval routing and definitions.',  true, 15, false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Two active subscriptions for this tenant
@@ -889,6 +1126,10 @@ INSERT INTO kabipay_ops.tenant_subscription (
     ('$SubLeaveId',   '$TenantId', '$ModuleLeaveId',   'ACTIVE',
         CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year', 100, 1, 'BLOCK'),
     ('$SubPayrollId', '$TenantId', '$ModulePayrollId', 'ACTIVE',
+        CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year', 100, 1, 'BLOCK'),
+    ('$SubAttendanceId', '$TenantId', '$ModuleAttendanceId', 'ACTIVE',
+        CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year', 100, 1, 'BLOCK'),
+    ('$SubWorkflowId', '$TenantId', '$ModuleWorkflowId', 'ACTIVE',
         CURRENT_DATE, CURRENT_DATE + INTERVAL '1 year', 100, 1, 'BLOCK')
 ON CONFLICT (id) DO NOTHING;
 
@@ -987,6 +1228,12 @@ Invoke-TenantSql -Label "counts" -Sql $SqlSummary
 
 Write-Host ""
 Write-Host "Seed complete." -ForegroundColor Green
+Write-Host ""
+Write-Host "Demo tenant logins (password ChangeMe!123):" -ForegroundColor Yellow
+Write-Host '  demo@kabipay.local          - HR_ADMIN + employee (full HR + self-service)'
+Write-Host '  tenant-admin@kabipay.local  - TENANT_ADMIN (admin shell + leave configuration)'
+Write-Host '  manager@kabipay.local       - LINE_MANAGER (team-scoped approvals)'
+Write-Host '  staff@kabipay.local         - employee only (no elevated roles)'
 Write-Host ""
 Write-Host "Try the employee query once kabipay-employee is running:" -ForegroundColor Yellow
 Write-Host '  PowerShell:'

@@ -11,4 +11,5 @@ pub mod object_store;
 pub mod offboarding_fnf_service;
 pub mod onboarding_service;
 pub mod org_service;
+pub mod rbac_admin_service;
 pub mod separation_service;

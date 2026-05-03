@@ -3,7 +3,7 @@
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{
-    attendance, holiday, shift, timesheet_entry,
+    attendance, holiday, holiday_calendar, shift, timesheet_entry,
 };
 use kabipay_db_entities::tenant::d0032_attendance_punch_policy::attendance_punch_policy;
 use rust_decimal::prelude::ToPrimitive;
@@ -242,4 +242,69 @@ impl From<PunchDaySummary> for PunchDaySummaryDto {
             segments: s.segments.into_iter().map(AttendanceDto::from).collect(),
         }
     }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "HolidayCalendar")]
+pub struct HolidayCalendarDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub location_id: Option<ID>,
+    pub name: String,
+    pub year: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<holiday_calendar::Model> for HolidayCalendarDto {
+    fn from(m: holiday_calendar::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            location_id: m.location_id.map(|u| ID(u.to_string())),
+            name: m.name,
+            year: m.year,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "HolidayDay")]
+pub struct HolidayDayDto {
+    pub id: ID,
+    pub calendar_id: ID,
+    pub holiday_date: NaiveDate,
+    pub name: String,
+    pub holiday_type: Option<String>,
+}
+
+impl From<holiday::Model> for HolidayDayDto {
+    fn from(m: holiday::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            calendar_id: ID(m.calendar_id.to_string()),
+            holiday_date: m.holiday_date,
+            name: m.name,
+            holiday_type: m.r#type,
+        }
+    }
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertHolidayCalendarInput {
+    pub id: Option<ID>,
+    pub name: String,
+    pub year: i32,
+    pub location_id: Option<ID>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertHolidayDayInput {
+    pub calendar_id: ID,
+    pub id: Option<ID>,
+    pub holiday_date: NaiveDate,
+    pub name: String,
+    pub holiday_type: Option<String>,
 }

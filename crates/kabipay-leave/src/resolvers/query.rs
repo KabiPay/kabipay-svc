@@ -11,8 +11,10 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
-use crate::resolvers::types::{LeaveBalanceDto, LeaveRequestDto, LeaveTypeDto};
-use crate::services::leave_service;
+use crate::resolvers::types::{
+    LeaveBalanceDto, LeavePolicyDto, LeaveRequestDto, LeaveTypeDto, LeaveWorkflowActionDto,
+};
+use crate::services::{leave_admin, leave_service};
 
 pub(crate) fn parse_uuid(raw: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(raw.as_str())
@@ -25,6 +27,16 @@ pub struct QueryRoot;
 impl QueryRoot {
     async fn leave_health(&self) -> &'static str {
         "ok"
+    }
+
+    /// Canonical `EMPLOYEE.id` for the authenticated client (from JWT → user → employee link).
+    async fn viewer_employee_id(&self, ctx: &Context<'_>) -> Result<ID> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(ID(id.to_string()))
     }
 
     /// List leave types for the caller's tenant.
@@ -87,5 +99,51 @@ impl QueryRoot {
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(LeaveBalanceDto::from).collect())
+    }
+
+    /// Published leave policies for the tenant (configuration reference for employees and HR).
+    async fn leave_policies(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<LeavePolicyDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = leave_admin::list_leave_policies(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(LeavePolicyDto::from).collect())
+    }
+
+    /// Workflow step actions recorded for a leave request (empty when no workflow instance).
+    async fn leave_request_workflow_trail(
+        &self,
+        ctx: &Context<'_>,
+        leave_request_id: ID,
+    ) -> Result<Vec<LeaveWorkflowActionDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let scope = data_scope_from_context(ctx, SCOPE_RES_LEAVE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let rid = parse_uuid(&leave_request_id, "leaveRequestId")?;
+        let req = leave_service::load_leave_request_for_viewer(&db, tenant_id, rid, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let Some(req) = req else {
+            return Err(KabiPayError::Forbidden(
+                "leave request not found or not visible".into(),
+            )
+            .into_graphql());
+        };
+        let Some(inst) = req.workflow_instance_id else {
+            return Ok(vec![]);
+        };
+        let rows = leave_service::leave_workflow_action_trail(&db, tenant_id, inst)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows
+            .into_iter()
+            .map(|(a, step)| LeaveWorkflowActionDto::from_action(step, a))
+            .collect())
     }
 }

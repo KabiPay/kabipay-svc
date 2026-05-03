@@ -4,6 +4,7 @@ use async_graphql::Context;
 use kabipay_common::client_data_scope::data_scope_from_context;
 use kabipay_common::context::ScopeType;
 use kabipay_common::context::SCOPE_RES_EMPLOYEE;
+use kabipay_common::subgraph::require_client_claims;
 use kabipay_common::KabiPayError;
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;
@@ -39,6 +40,24 @@ pub async fn assert_employee_in_data_scope(
     if !employee_service::is_employee_in_scope(scope, viewer, &target) {
         return Err(KabiPayError::Forbidden(
             "not allowed to access this employee for documents".into(),
+        )
+        .into_graphql());
+    }
+    Ok(())
+}
+
+/// Tenant RBAC admin APIs (`role:manage` or HR / tenant admin roles). Mirrors [`ClientClaims::can_manage_tenant_rbac`].
+pub fn require_tenant_rbac_admin(ctx: &Context<'_>) -> async_graphql::Result<()> {
+    let claims = require_client_claims(ctx)?;
+    if std::env::var("KABIPAY_INSECURE_ALLOW_EMPTY_RBAC").as_deref() == Ok("1")
+        && claims.roles.is_empty()
+        && claims.permissions.is_empty()
+    {
+        return Ok(());
+    }
+    if !claims.can_manage_tenant_rbac() {
+        return Err(KabiPayError::Forbidden(
+            "role:manage or HR_ADMIN / TENANT_ADMIN / ORG_ADMIN required".into(),
         )
         .into_graphql());
     }

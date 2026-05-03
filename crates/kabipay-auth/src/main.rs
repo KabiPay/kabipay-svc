@@ -11,6 +11,7 @@
 //!   POST /auth/client/mfa     { mfaToken, code }           → 501 (scaffolded)
 //!   POST /auth/client/refresh { refresh }                  → TokenPair (rotated)
 //!   POST /auth/client/logout  { refresh }                  → 204
+//!   POST /auth/client/change-password { currentPassword, newPassword } → 204 (Bearer access)
 //!
 //!   POST /auth/introspect     { token }                    → { active, userId, tenantId, issuer, email, exp }
 //!
@@ -96,6 +97,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/client/mfa", post(handlers::client_mfa))
         .route("/auth/client/refresh", post(handlers::client_refresh))
         .route("/auth/client/logout", post(handlers::client_logout))
+        .route(
+            "/auth/client/change-password",
+            post(handlers::client_change_password),
+        )
         // Token introspection (used by gateway + subgraph auth middleware)
         .route("/auth/introspect", post(handlers::introspect))
         .with_state(app_state)

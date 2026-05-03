@@ -2,6 +2,7 @@
 
 use chrono::{NaiveDate, Utc};
 use kabipay_common::client_data_scope::EmployeeScopeFilter;
+use kabipay_common::workflow_approval;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use kabipay_db_entities::tenant::d0015_expense::{expense, expense_category};
@@ -324,6 +325,15 @@ pub async fn approve_expense(
             .await?
             .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
 
+        workflow_approval::assert_workflow_step_actor(
+            &txn,
+            tenant_id,
+            approver_user_id,
+            model.employee_id,
+            &cur_step,
+        )
+        .await?;
+
         let act = workflow_action::ActiveModel {
             id: Set(Uuid::new_v4()),
             tenant_id: Set(tenant_id),
@@ -367,6 +377,20 @@ pub async fn approve_expense(
 
         finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, now).await?;
     } else {
+        if !workflow_approval::user_has_permission_via_roles(
+            &txn,
+            tenant_id,
+            approver_user_id,
+            "expense",
+            "approve",
+        )
+        .await?
+        {
+            return Err(KabiPayError::Forbidden(
+                "only users with expense approval permission may approve claims without a workflow"
+                    .into(),
+            ));
+        }
         finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, now).await?;
     }
 
@@ -398,6 +422,23 @@ pub async fn reject_expense(
     let txn = db.begin().await?;
     let model = load_pending_expense_conn(&txn, tenant_id, expense_id).await?;
 
+    if model.workflow_instance_id.is_none() {
+        if !workflow_approval::user_has_permission_via_roles(
+            &txn,
+            tenant_id,
+            rejector_user_id,
+            "expense",
+            "approve",
+        )
+        .await?
+        {
+            return Err(KabiPayError::Forbidden(
+                "only users with expense approval permission may reject claims without a workflow"
+                    .into(),
+            ));
+        }
+    }
+
     if let Some(inst_id) = model.workflow_instance_id {
         if let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
             .filter(workflow_instance::Column::TenantId.eq(tenant_id))
@@ -407,6 +448,19 @@ pub async fn reject_expense(
             if inst.status == WF_STATUS_IN_PROGRESS {
                 let now = Utc::now();
                 if let Some(step_id) = inst.current_step_id {
+                    let st = workflow_step::Entity::find_by_id(step_id)
+                        .filter(workflow_step::Column::TenantId.eq(tenant_id))
+                        .one(&txn)
+                        .await?
+                        .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
+                    workflow_approval::assert_workflow_step_actor(
+                        &txn,
+                        tenant_id,
+                        rejector_user_id,
+                        model.employee_id,
+                        &st,
+                    )
+                    .await?;
                     let act = workflow_action::ActiveModel {
                         id: Set(Uuid::new_v4()),
                         tenant_id: Set(tenant_id),

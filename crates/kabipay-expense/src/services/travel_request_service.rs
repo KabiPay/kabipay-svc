@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use kabipay_common::client_data_scope::EmployeeScopeFilter;
+use kabipay_common::workflow_approval;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use kabipay_db_entities::tenant::d0027_communication_audit::notification;
@@ -102,6 +103,13 @@ pub async fn approve_travel_request(
     approver_user_id: Uuid,
 ) -> KabiPayResult<travel_request::Model> {
     let model = load_pending_travel(db, tenant_id, travel_request_id).await?;
+    workflow_approval::assert_travel_approval_actor(
+        db,
+        tenant_id,
+        approver_user_id,
+        model.employee_id,
+    )
+    .await?;
     let now = Utc::now();
     let mut am: travel_request::ActiveModel = model.into();
     am.status = Set(STATUS_APPROVED.into());
@@ -133,6 +141,13 @@ pub async fn reject_travel_request(
     rejection_reason: Option<String>,
 ) -> KabiPayResult<travel_request::Model> {
     let model = load_pending_travel(db, tenant_id, travel_request_id).await?;
+    workflow_approval::assert_travel_approval_actor(
+        db,
+        tenant_id,
+        rejector_user_id,
+        model.employee_id,
+    )
+    .await?;
     let now = Utc::now();
     let mut am: travel_request::ActiveModel = model.into();
     am.status = Set(STATUS_REJECTED.into());

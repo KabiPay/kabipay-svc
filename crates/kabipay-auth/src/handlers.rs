@@ -22,11 +22,12 @@
 //! MFA endpoints are still scaffolded 501 — we wire them once the MFA
 //! enrolment flow is designed.
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, http::HeaderMap, http::StatusCode, Json};
 use chrono::{Duration, Utc};
 use kabipay_common::{
     db::resolve_tenant_db,
     error::{KabiPayError, KabiPayResult},
+    jwt::{decode_client_jwt, extract_bearer},
 };
 use kabipay_db_entities::{
     ops::{operator_session, operator_user},
@@ -70,6 +71,14 @@ pub struct MfaInput {
 #[derive(Debug, Deserialize)]
 pub struct RefreshInput {
     pub refresh: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientChangePasswordInput {
+    #[serde(rename = "currentPassword")]
+    pub current_password: String,
+    #[serde(rename = "newPassword")]
+    pub new_password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,6 +290,67 @@ pub async fn client_logout(
 
 pub async fn client_mfa(Json(_body): Json<MfaInput>) -> impl axum::response::IntoResponse {
     not_implemented("POST /auth/client/mfa")
+}
+
+/// Change password for the signed-in client user. Requires `Authorization: Bearer <access>`.
+/// On success: updates hash, revokes **all** refresh sessions for the user (force re-login).
+pub async fn client_change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ClientChangePasswordInput>,
+) -> Result<StatusCode, KabiPayError> {
+    const MIN_LEN: usize = 8;
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .ok_or(KabiPayError::Unauthorised)?;
+    let token = extract_bearer(auth_header)?;
+    let claims = decode_client_jwt(token, &state.jwt.secret)?;
+    let tenant_id = claims.tenant_id;
+    let user_id = claims.sub;
+
+    let new_pw = body.new_password.trim();
+    if new_pw.len() < MIN_LEN {
+        return Err(KabiPayError::Validation(format!(
+            "newPassword must be at least {MIN_LEN} characters"
+        )));
+    }
+    if new_pw == body.current_password {
+        return Err(KabiPayError::Validation(
+            "newPassword must differ from current password".into(),
+        ));
+    }
+
+    let tenant_conn = resolve_tenant_db(
+        tenant_id,
+        &state.ops_db,
+        &state.tenant_cache,
+        &state.tenant_fallback,
+    )
+    .await?;
+
+    let user_row = user::Entity::find_by_id(user_id)
+        .one(&tenant_conn)
+        .await?
+        .ok_or(KabiPayError::Unauthorised)?;
+    if user_row.tenant_id != tenant_id || !user_row.is_active || user_row.is_deleted {
+        return Err(KabiPayError::Unauthorised);
+    }
+    if !password::verify(&body.current_password, &user_row.password_hash)? {
+        return Err(KabiPayError::Unauthorised);
+    }
+
+    let new_hash = password::hash(new_pw)?;
+    let mut active: user::ActiveModel = user_row.into();
+    active.password_hash = ActiveValue::Set(new_hash);
+    active.update(&tenant_conn).await?;
+
+    user_session::Entity::delete_many()
+        .filter(user_session::Column::UserId.eq(user_id))
+        .exec(&tenant_conn)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

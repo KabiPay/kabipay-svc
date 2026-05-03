@@ -186,6 +186,10 @@ pub const PERM_PAYROLL_STATUTORY_EXPORT: &str = "payroll:statutory_export";
 pub const PERM_ATTENDANCE_PUNCH_POLICY: &str = "attendance:punch_policy";
 /// Create or edit **workflow** definitions and **steps** (tenant configuration).
 pub const PERM_WORKFLOW_MANAGE: &str = "workflow:manage";
+/// Configure **leave** master data (types, policies, balances) and holiday calendars (attendance subgraph).
+pub const PERM_LEAVE_MANAGE: &str = "leave:manage";
+/// Assign tenant **roles** / **permissions** / **scopes** to users (RBAC administration).
+pub const PERM_ROLE_MANAGE: &str = "role:manage";
 
 /// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
 /// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
@@ -272,6 +276,28 @@ impl ClientClaims {
     /// Create or update **workflow** definitions and **steps** (tenant approval graphs).
     pub fn can_manage_workflow_definitions(&self) -> bool {
         if self.has_any_permission(&[PERM_WORKFLOW_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Configure leave types, policies, employee balances, and (via attendance) holiday calendars.
+    pub fn can_manage_leave_configuration(&self) -> bool {
+        if self.has_any_permission(&[PERM_LEAVE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Manage tenant RBAC: roles, permission grants, and list scopes (`role:manage` or elevated HR / tenant admin).
+    pub fn can_manage_tenant_rbac(&self) -> bool {
+        if self.has_any_permission(&[PERM_ROLE_MANAGE]) {
             return true;
         }
         self.roles.iter().any(|r| {

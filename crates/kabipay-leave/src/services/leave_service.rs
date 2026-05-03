@@ -2,10 +2,12 @@
 //! `tenant_id` filter (defence in depth on top of schema isolation) and
 //! the `is_deleted = false` soft-delete filter.
 
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use kabipay_common::context::{ClientViewerEmployee, ScopeType};
+use kabipay_common::workflow_approval;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
+use kabipay_db_entities::tenant::d0010_time_shift_roster::{holiday, holiday_calendar};
 use kabipay_db_entities::tenant::d0011_leave::{leave_balance, leave_request, leave_type};
 use kabipay_db_entities::tenant::d0025_workflow::{
     workflow, workflow_action, workflow_instance, workflow_step,
@@ -17,6 +19,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
     QueryOrder, QuerySelect, Set, TransactionTrait,
 };
+use std::collections::HashSet;
 use uuid::Uuid;
 
 pub async fn list_types(
@@ -158,14 +161,13 @@ pub async fn submit_leave_request(
     is_half_day: bool,
     half_day_session: Option<String>,
     reason: Option<String>,
+    supporting_document_reference: Option<String>,
 ) -> KabiPayResult<leave_request::Model> {
     if from_date > to_date {
         return Err(KabiPayError::Validation(
             "fromDate must be on or before toDate".into(),
         ));
     }
-
-    let days = requested_days(from_date, to_date, is_half_day)?;
 
     let txn = db.begin().await?;
 
@@ -182,6 +184,26 @@ pub async fn submit_leave_request(
     if is_half_day && !lt.half_day_allowed {
         return Err(KabiPayError::Validation(
             "this leave type does not allow half-day requests".into(),
+        ));
+    }
+
+    let holiday_dates = tenant_holiday_dates_between(&txn, tenant_id, from_date, to_date).await?;
+
+    let days = compute_requested_days(
+        from_date,
+        to_date,
+        is_half_day,
+        lt.sandwich_rule,
+        &holiday_dates,
+    )?;
+
+    let doc_ref = supporting_document_reference
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if lt.requires_document && doc_ref.is_none() {
+        return Err(KabiPayError::Validation(
+            "this leave type requires a supporting document reference (link or reference ID)"
+                .into(),
         ));
     }
 
@@ -221,6 +243,7 @@ pub async fn submit_leave_request(
         status: Set("PENDING".into()),
         reason: Set(reason),
         rejection_reason: Set(None),
+        supporting_document_reference: Set(doc_ref),
         approved_by: Set(None),
         workflow_instance_id: Set(None),
         applied_at: Set(now),
@@ -253,6 +276,7 @@ pub async fn submit_leave_request(
 const STATUS_PENDING: &str = "PENDING";
 const STATUS_APPROVED: &str = "APPROVED";
 const STATUS_REJECTED: &str = "REJECTED";
+const STATUS_CANCELLED: &str = "CANCELLED";
 
 /// New outbox rows start here until a consumer marks them processed (Gap G — M6).
 const OUTBOX_STATUS_PENDING: &str = "PENDING";
@@ -453,6 +477,15 @@ pub async fn approve_leave_request(
             .await?
             .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
 
+        workflow_approval::assert_workflow_step_actor(
+            &txn,
+            tenant_id,
+            approver_user_id,
+            model.employee_id,
+            &cur_step,
+        )
+        .await?;
+
         let act = workflow_action::ActiveModel {
             id: Set(Uuid::new_v4()),
             tenant_id: Set(tenant_id),
@@ -508,6 +541,20 @@ pub async fn approve_leave_request(
         )
         .await?;
     } else {
+        if !workflow_approval::user_has_permission_via_roles(
+            &txn,
+            tenant_id,
+            approver_user_id,
+            "leave",
+            "approve",
+        )
+        .await?
+        {
+            return Err(KabiPayError::Forbidden(
+                "only users with leave approval permission may approve requests without a workflow"
+                    .into(),
+            ));
+        }
         let bal = load_balance_for_request(&txn, tenant_id, &model).await?;
         finalize_leave_approval(
             &txn,
@@ -550,6 +597,23 @@ pub async fn reject_leave_request(
     let txn = db.begin().await?;
     let model = load_pending_request_in_txn(&txn, tenant_id, request_id).await?;
 
+    if model.workflow_instance_id.is_none() {
+        if !workflow_approval::user_has_permission_via_roles(
+            &txn,
+            tenant_id,
+            rejector_user_id,
+            "leave",
+            "approve",
+        )
+        .await?
+        {
+            return Err(KabiPayError::Forbidden(
+                "only users with leave approval permission may reject requests without a workflow"
+                    .into(),
+            ));
+        }
+    }
+
     if let Some(inst_id) = model.workflow_instance_id {
         if let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
             .filter(workflow_instance::Column::TenantId.eq(tenant_id))
@@ -559,6 +623,19 @@ pub async fn reject_leave_request(
             if inst.status == WF_STATUS_IN_PROGRESS {
                 let now = Utc::now();
                 if let Some(step_id) = inst.current_step_id {
+                    let st = workflow_step::Entity::find_by_id(step_id)
+                        .filter(workflow_step::Column::TenantId.eq(tenant_id))
+                        .one(&txn)
+                        .await?
+                        .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
+                    workflow_approval::assert_workflow_step_actor(
+                        &txn,
+                        tenant_id,
+                        rejector_user_id,
+                        model.employee_id,
+                        &st,
+                    )
+                    .await?;
                     let act = workflow_action::ActiveModel {
                         id: Set(Uuid::new_v4()),
                         tenant_id: Set(tenant_id),
@@ -631,6 +708,92 @@ pub async fn reject_leave_request(
     Ok(out)
 }
 
+/// Withdraw a **PENDING** request by the submitting employee: cancel workflow if any,
+/// release balance reservation, set status `CANCELLED`.
+pub async fn cancel_leave_request(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    request_id: Uuid,
+    canceller_employee_id: Uuid,
+) -> KabiPayResult<leave_request::Model> {
+    let txn = db.begin().await?;
+    let model = load_pending_request_in_txn(&txn, tenant_id, request_id).await?;
+
+    if model.employee_id != canceller_employee_id {
+        return Err(KabiPayError::Forbidden(
+            "only the employee who submitted the request may cancel a pending request".into(),
+        ));
+    }
+
+    let now = Utc::now();
+
+    if let Some(inst_id) = model.workflow_instance_id {
+        if let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
+            .filter(workflow_instance::Column::TenantId.eq(tenant_id))
+            .one(&txn)
+            .await?
+        {
+            if inst.status == WF_STATUS_IN_PROGRESS {
+                let mut am_inst: workflow_instance::ActiveModel = inst.into();
+                am_inst.status = Set(WF_STATUS_CANCELLED.into());
+                am_inst.completed_at = Set(Some(now));
+                am_inst.updated_at = Set(now);
+                am_inst.update(&txn).await?;
+            }
+        }
+    }
+
+    let year = model.from_date.year();
+    let days = model.days_requested;
+    let bal = leave_balance::Entity::find()
+        .filter(leave_balance::Column::TenantId.eq(tenant_id))
+        .filter(leave_balance::Column::EmployeeId.eq(model.employee_id))
+        .filter(leave_balance::Column::LeaveTypeId.eq(model.leave_type_id))
+        .filter(leave_balance::Column::Year.eq(year))
+        .one(&txn)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "leave_balance",
+            id: format!("{}-{}", model.employee_id, year),
+        })?;
+
+    let new_pending = bal.pending_days - days;
+    if new_pending < Decimal::ZERO {
+        return Err(KabiPayError::Validation(
+            "leave balance pending mismatch — cannot cancel".into(),
+        ));
+    }
+    let new_balance = bal.balance_days + days;
+
+    let mut am_req: leave_request::ActiveModel = model.clone().into();
+    am_req.status = Set(STATUS_CANCELLED.into());
+    am_req.rejection_reason = Set(None);
+    am_req.approved_by = Set(None);
+    am_req.updated_at = Set(now);
+    am_req.update(&txn).await?;
+
+    let mut am_bal: leave_balance::ActiveModel = bal.into();
+    am_bal.pending_days = Set(new_pending);
+    am_bal.balance_days = Set(new_balance);
+    am_bal.updated_at = Set(now);
+    am_bal.update(&txn).await?;
+
+    let out = leave_request::Entity::find_by_id(request_id)
+        .one(&txn)
+        .await?
+        .ok_or_else(|| KabiPayError::Internal("updated leave_request not found".into()))?;
+    txn.commit().await?;
+    leave_notify_employee(
+        db,
+        tenant_id,
+        out.employee_id,
+        "Leave withdrawn",
+        "Your pending leave request was cancelled.",
+    )
+    .await;
+    Ok(out)
+}
+
 async fn load_pending_request_in_txn(
     db: &impl ConnectionTrait,
     tenant_id: Uuid,
@@ -651,6 +814,85 @@ async fn load_pending_request_in_txn(
         ));
     }
     Ok(m)
+}
+
+/// Whether `subject_employee_id`'s leave rows may be read given JWT scope + viewer.
+pub async fn employee_may_view_leave_subject(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    subject_employee_id: Uuid,
+    scope: ScopeType,
+    viewer: Option<ClientViewerEmployee>,
+) -> KabiPayResult<bool> {
+    match scope {
+        ScopeType::All => Ok(true),
+        ScopeType::Self_ => Ok(viewer
+            .map(|v| v.employee_id == subject_employee_id)
+            .unwrap_or(false)),
+        ScopeType::Team => {
+            let Some(v) = viewer else {
+                return Ok(false);
+            };
+            let ids = team_member_employee_ids(db, tenant_id, v.employee_id).await?;
+            Ok(ids.contains(&subject_employee_id))
+        }
+        ScopeType::Department => {
+            let Some(v) = viewer else {
+                return Ok(false);
+            };
+            let ids = department_peer_employee_ids(db, tenant_id, v).await?;
+            Ok(ids.contains(&subject_employee_id))
+        }
+    }
+}
+
+pub async fn load_leave_request_for_viewer(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    request_id: Uuid,
+    scope: ScopeType,
+    viewer: Option<ClientViewerEmployee>,
+) -> KabiPayResult<Option<leave_request::Model>> {
+    let m = leave_request::Entity::find_by_id(request_id)
+        .filter(leave_request::Column::TenantId.eq(tenant_id))
+        .filter(leave_request::Column::IsDeleted.eq(false))
+        .one(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let Some(row) = m else {
+        return Ok(None);
+    };
+    let ok = employee_may_view_leave_subject(db, tenant_id, row.employee_id, scope, viewer).await?;
+    if !ok {
+        return Ok(None);
+    }
+    Ok(Some(row))
+}
+
+pub async fn leave_workflow_action_trail(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    workflow_instance_id: Uuid,
+) -> KabiPayResult<Vec<(workflow_action::Model, String)>> {
+    let acts = workflow_action::Entity::find()
+        .filter(workflow_action::Column::TenantId.eq(tenant_id))
+        .filter(workflow_action::Column::InstanceId.eq(workflow_instance_id))
+        .order_by_asc(workflow_action::Column::ActedAt)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    let mut out = Vec::with_capacity(acts.len());
+    for a in acts {
+        let step_name = workflow_step::Entity::find_by_id(a.workflow_step_id)
+            .filter(workflow_step::Column::TenantId.eq(tenant_id))
+            .one(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .map(|s| s.step_name)
+            .unwrap_or_else(|| "(unknown step)".into());
+        out.push((a, step_name));
+    }
+    Ok(out)
 }
 
 /// Best-effort in-app row for the requester's linked `user` (if any).
@@ -692,10 +934,39 @@ async fn leave_notify_employee(
     }
 }
 
-fn requested_days(
+async fn tenant_holiday_dates_between<C: ConnectionTrait + Sync>(
+    conn: &C,
+    tenant_id: Uuid,
+    from_date: NaiveDate,
+    to_date: NaiveDate,
+) -> KabiPayResult<HashSet<NaiveDate>> {
+    let calendars = holiday_calendar::Entity::find()
+        .filter(holiday_calendar::Column::TenantId.eq(tenant_id))
+        .all(conn)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    let calendar_ids: Vec<Uuid> = calendars.into_iter().map(|c| c.id).collect();
+    if calendar_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let rows = holiday::Entity::find()
+        .filter(holiday::Column::CalendarId.is_in(calendar_ids))
+        .filter(holiday::Column::HolidayDate.between(from_date, to_date))
+        .all(conn)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    Ok(rows.into_iter().map(|h| h.holiday_date).collect())
+}
+
+fn compute_requested_days(
     from_date: NaiveDate,
     to_date: NaiveDate,
     is_half_day: bool,
+    sandwich_rule: bool,
+    holidays: &HashSet<NaiveDate>,
 ) -> KabiPayResult<Decimal> {
     if is_half_day {
         if from_date != to_date {
@@ -705,11 +976,33 @@ fn requested_days(
         }
         return Ok(Decimal::new(5, 1));
     }
-    let n = (to_date - from_date).num_days() + 1;
-    if n < 1 {
+
+    if sandwich_rule {
+        let n = (to_date - from_date).num_days() + 1;
+        if n < 1 {
+            return Err(KabiPayError::Validation(
+                "fromDate must be on or before toDate".into(),
+            ));
+        }
+        return Ok(Decimal::from(n));
+    }
+
+    let mut count: i64 = 0;
+    let mut cur = from_date;
+    while cur <= to_date {
+        let wd = cur.weekday();
+        if wd != Weekday::Sat && wd != Weekday::Sun && !holidays.contains(&cur) {
+            count += 1;
+        }
+        cur += Duration::days(1);
+    }
+
+    if count == 0 {
         return Err(KabiPayError::Validation(
-            "fromDate must be on or before toDate".into(),
+            "no chargeable working days in this date range (weekends and holidays are excluded when sandwich rule is off)"
+                .into(),
         ));
     }
-    Ok(Decimal::from(n))
+
+    Ok(Decimal::from(count))
 }

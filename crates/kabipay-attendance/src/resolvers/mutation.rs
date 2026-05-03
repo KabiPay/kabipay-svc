@@ -12,14 +12,26 @@ use uuid::Uuid;
 
 use crate::resolvers::types::{
     AddManualAttendanceSegmentInput, AttendanceDto, AttendancePunchPolicyDto,
-    CreateTimesheetEntryInput, PunchTodayInput, TimesheetEntryDto,
-    UpsertAttendancePunchPolicyInput,
+    CreateTimesheetEntryInput, HolidayCalendarDto, HolidayDayDto, PunchTodayInput,
+    TimesheetEntryDto, UpsertAttendancePunchPolicyInput, UpsertHolidayCalendarInput,
+    UpsertHolidayDayInput,
 };
 use crate::services::{attendance_service, punch_policy};
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
         .map_err(|e| KabiPayError::Validation(format!("invalid {field}: {e}")).into_graphql())
+}
+
+fn require_leave_configuration_admin(ctx: &Context<'_>) -> Result<()> {
+    let claims = require_client_claims(ctx)?;
+    if !claims.can_manage_leave_configuration() {
+        return Err(
+            KabiPayError::Forbidden("missing permission to manage leave configuration".into())
+                .into_graphql(),
+        );
+    }
+    Ok(())
 }
 
 pub struct MutationRoot;
@@ -147,5 +159,78 @@ impl MutationRoot {
         attendance_service::delete_timesheet_entry(&db, tenant_id, employee_id, eid)
             .await
             .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn upsert_holiday_calendar(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertHolidayCalendarInput,
+    ) -> Result<HolidayCalendarDto> {
+        require_leave_configuration_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let id = input.id.as_ref().map(|i| parse_uuid(i, "calendarId")).transpose()?;
+        let loc = input
+            .location_id
+            .as_ref()
+            .map(|i| parse_uuid(i, "locationId"))
+            .transpose()?;
+        let m = attendance_service::upsert_holiday_calendar(
+            &db,
+            tenant_id,
+            id,
+            input.name,
+            input.year,
+            loc,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(HolidayCalendarDto::from(m))
+    }
+
+    async fn delete_holiday_calendar(&self, ctx: &Context<'_>, calendar_id: ID) -> Result<bool> {
+        require_leave_configuration_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let cid = parse_uuid(&calendar_id, "calendarId")?;
+        let n = attendance_service::delete_holiday_calendar(&db, tenant_id, cid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(n > 0)
+    }
+
+    async fn upsert_holiday_day(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertHolidayDayInput,
+    ) -> Result<HolidayDayDto> {
+        require_leave_configuration_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let calendar_id = parse_uuid(&input.calendar_id, "calendarId")?;
+        let hid = input.id.as_ref().map(|i| parse_uuid(i, "holidayId")).transpose()?;
+        let m = attendance_service::upsert_holiday_entry(
+            &db,
+            tenant_id,
+            calendar_id,
+            hid,
+            input.holiday_date,
+            input.name,
+            input.holiday_type,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(HolidayDayDto::from(m))
+    }
+
+    async fn delete_holiday_day(&self, ctx: &Context<'_>, holiday_id: ID) -> Result<bool> {
+        require_leave_configuration_admin(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let hid = parse_uuid(&holiday_id, "holidayId")?;
+        let n = attendance_service::delete_holiday_entry(&db, tenant_id, hid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(n > 0)
     }
 }
