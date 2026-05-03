@@ -34,3 +34,4 @@ pub mod d0031_tax_proof;
 pub mod d0032_attendance_punch_policy;
 pub mod d0033_travel_request;
 pub mod d0035_payroll_arrear;
+pub mod d0046_user_notification_preference;

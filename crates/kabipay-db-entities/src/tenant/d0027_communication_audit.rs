@@ -17,6 +17,9 @@ pub mod announcement {
         pub target_location_id: Option<Uuid>,
         pub publish_at: Option<DateTimeUtc>,
         pub expires_at: Option<DateTimeUtc>,
+        pub image_file_storage_id: Option<Uuid>,
+        pub document_file_storage_id: Option<Uuid>,
+        pub post_source: String,
         pub created_at: DateTimeUtc,
         pub updated_at: DateTimeUtc,
     }

@@ -21,6 +21,8 @@ pub mod travel_request {
         pub rejection_reason: Option<String>,
         pub approved_by: Option<Uuid>,
         pub rejected_by: Option<Uuid>,
+        /// When set, approvals follow **`TRAVEL_REQUEST`** workflow steps (**M32** style).
+        pub workflow_instance_id: Option<Uuid>,
         pub submitted_at: DateTimeUtc,
         pub created_at: DateTimeUtc,
         pub updated_at: DateTimeUtc,

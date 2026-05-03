@@ -178,6 +178,10 @@ pub const PERM_EMPLOYEE_MANAGE: &str = "employee:manage";
 pub const PERM_LEAVE_APPROVE: &str = "leave:approve";
 /// Approve or reject expense claims submitted by others.
 pub const PERM_EXPENSE_APPROVE: &str = "expense:approve";
+/// Configure expense categories (travel/meal/other claim types employees select).
+pub const PERM_EXPENSE_MANAGE: &str = "expense:manage";
+/// Mark expense reimbursements as paid / failed / on hold (payroll or accounting path).
+pub const PERM_EXPENSE_PAY: &str = "expense:pay";
 /// Approve or reject **tax proof** lines (submitted actuals vs declared deductions).
 pub const PERM_TAX_PROOF_APPROVE: &str = "tax:approve";
 /// Export India payroll statutory artefacts (e.g. monthly TDS summary CSV) for the tenant.
@@ -224,6 +228,8 @@ pub const PERM_ATTENDANCE_REGULARIZE: &str = "attendance:regularize";
 pub const PERM_TIMESHEET_APPROVE: &str = "timesheet:approve";
 /// Configure timesheet catalogs (projects / tasks) and lock policy (`master_data` backed).
 pub const PERM_TIMESHEET_MANAGE: &str = "timesheet:manage";
+/// Create or edit **tenant announcements**, send **direct in-app notifications**, and remove broadcasts.
+pub const PERM_NOTIFICATION_MANAGE: &str = "notification:manage";
 
 /// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
 /// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
@@ -274,6 +280,15 @@ impl ClientClaims {
         })
     }
 
+    /// Update expense **payment** / reimbursement status after approval.
+    pub fn can_mark_expense_payment(&self) -> bool {
+        if self.has_any_permission(&[PERM_EXPENSE_PAY]) {
+            return true;
+        }
+        // Same baseline as approvers + accounting — finance often overlaps with expense approval.
+        self.can_approve_expense()
+    }
+
     /// Approve or reject **tax deduction proof** lines (documented actuals).
     pub fn can_approve_tax_proof(&self) -> bool {
         if self.has_any_permission(&[PERM_TAX_PROOF_APPROVE]) {
@@ -321,6 +336,17 @@ impl ClientClaims {
     /// Configure leave types, policies, employee balances, and (via attendance) holiday calendars.
     pub fn can_manage_leave_configuration(&self) -> bool {
         if self.has_any_permission(&[PERM_LEAVE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Configure expense claim categories master data (`expense_category`).
+    pub fn can_manage_expense_configuration(&self) -> bool {
+        if self.has_any_permission(&[PERM_EXPENSE_MANAGE]) {
             return true;
         }
         self.roles.iter().any(|r| {
@@ -515,6 +541,23 @@ impl ClientClaims {
     /// HR configuration for timesheet projects/tasks and lock JSON (`timesheet:manage`).
     pub fn can_manage_timesheet_configuration(&self) -> bool {
         if self.has_any_permission(&[PERM_TIMESHEET_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// HR / comms admin: announcements, direct notifications, and related deletes. Also accepts
+    /// split permissions from the RBAC catalog (`notification:*`).
+    pub fn can_manage_notifications(&self) -> bool {
+        if self.has_any_permission(&[
+            PERM_NOTIFICATION_MANAGE,
+            "notification:create",
+            "notification:update",
+            "notification:delete",
+        ]) {
             return true;
         }
         self.roles.iter().any(|r| {

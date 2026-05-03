@@ -15,7 +15,7 @@
       run `kabipay-svc/scripts/update-tenant-liquibase.ps1 -Schema <tenant_schema>` **before** (or after) seeding.
 
       Tenant plane ("$Schema"):
-        0000 foundation   : department, designation, user, employee (original demo)
+        0000 foundation   : department (Engineering + Accounting), designation, users/employees; demo + line manager + staff + **accountant@kabipay.local** (ACCOUNTING_APPROVER — second-line expense/travel step in seeded workflows)
         0010 shift/attend : shift (DAY/NIGHT), attendance for today
         0011 leave        : leave_type (CL/SL), leave_request (PENDING)
         0012 payroll      : salary_component (BASIC/HRA/ARREAR), payroll_cycle (current month), demo payslip + TDS
@@ -33,7 +33,7 @@
         0022 assets       : asset_category, asset
         0023 grievance    : grievance_category, grievance_case
         0033 travel       : travel_request (PENDING, demo employee)
-        0025 workflow     : workflow, workflow_instance (LEAVE + EXPENSE defs, M32)
+        0025 workflow     : LEAVE + EXPENSE + TRAVEL_REQUEST + TIMESHEET definitions (multi-step approvals; expense/travel route to accounting role on step 2 in demo seeds)
         0027 comm/audit   : announcement, notification
 
       Ops plane (kabipay_ops):
@@ -154,7 +154,9 @@ function New-DeterministicUuid {
 # ---------- Deterministic UUIDs ----------
 # Foundation
 $DepartmentId        = New-DeterministicUuid -Seed "${Schema}:dept:engineering"
+$DepartmentAccountingId = New-DeterministicUuid -Seed "${Schema}:dept:accounting"
 $DesignationId       = New-DeterministicUuid -Seed "${Schema}:desig:software-engineer"
+$DesignationAccountingId = New-DeterministicUuid -Seed "${Schema}:desig:accountant"
 $UserId              = New-DeterministicUuid -Seed "${Schema}:user:demo"
 $EmployeeId          = New-DeterministicUuid -Seed "${Schema}:employee:demo"
 $ManagerUserId       = New-DeterministicUuid -Seed "${Schema}:user:line-manager"
@@ -162,15 +164,20 @@ $ManagerEmployeeId   = New-DeterministicUuid -Seed "${Schema}:employee:line-mana
 $TenantAdminUserId   = New-DeterministicUuid -Seed "${Schema}:user:tenant-admin"
 $StaffUserId         = New-DeterministicUuid -Seed "${Schema}:user:staff"
 $StaffEmployeeId     = New-DeterministicUuid -Seed "${Schema}:employee:staff"
+$AccountingUserId    = New-DeterministicUuid -Seed "${Schema}:user:accounting"
+$AccountingEmployeeId = New-DeterministicUuid -Seed "${Schema}:employee:accounting"
 $TenantAdminEmployeeId = New-DeterministicUuid -Seed "${Schema}:employee:tenant-admin"
 $RoleHrAdminId       = New-DeterministicUuid -Seed "${Schema}:role:HR_ADMIN"
 $RoleTenantAdminId   = New-DeterministicUuid -Seed "${Schema}:role:TENANT_ADMIN"
 $RoleLineManagerId   = New-DeterministicUuid -Seed "${Schema}:role:LINE_MANAGER"
 $RoleDemoStaffId     = New-DeterministicUuid -Seed "${Schema}:role:DEMO_STAFF"
+$RoleAccountingApproverId = New-DeterministicUuid -Seed "${Schema}:role:ACCOUNTING_APPROVER"
 $PermEmployeeWriteId = New-DeterministicUuid -Seed "${Schema}:perm:employee:write"
 $PermLeaveApproveId  = New-DeterministicUuid -Seed "${Schema}:perm:leave:approve"
 $PermLeaveManageId   = New-DeterministicUuid -Seed "${Schema}:perm:leave:manage"
 $PermExpenseApproveId = New-DeterministicUuid -Seed "${Schema}:perm:expense:approve"
+$PermExpenseManageId   = New-DeterministicUuid -Seed "${Schema}:perm:expense:manage"
+$PermExpensePayId = New-DeterministicUuid -Seed "${Schema}:perm:expense:pay"
 $PermTaxProofApproveId = New-DeterministicUuid -Seed "${Schema}:perm:tax:approve"
 $PermPayrollStatutoryId = New-DeterministicUuid -Seed "${Schema}:perm:payroll:statutory_export"
 $PermAttendancePunchPolicyId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:punch_policy"
@@ -193,11 +200,13 @@ $PermAttendancePunchSelfId = New-DeterministicUuid -Seed "${Schema}:perm:attenda
 $PermAttendanceRegularizeId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:regularize"
 $PermTimesheetApproveId = New-DeterministicUuid -Seed "${Schema}:perm:timesheet:approve"
 $PermTimesheetManageId = New-DeterministicUuid -Seed "${Schema}:perm:timesheet:manage"
+$PermNotificationManageId = New-DeterministicUuid -Seed "${Schema}:perm:notification:manage"
 $ScopeScopeEmployeeAllId  = New-DeterministicUuid -Seed "${Schema}:permission_scope:employee:write:ALL"
 $ScopeScopeLeaveAllId   = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:ALL"
 $ScopeScopeLeaveTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:TEAM:LM"
 $ScopeScopeExpenseAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:ALL"
 $ScopeScopeExpenseTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:TEAM:LM"
+$ScopeScopeExpenseAcctAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:expense:approve:ALL:ACCOUNTING"
 $ScopeScopeAttendanceAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:read:ALL"
 $ScopeAttendancePunchPolicyAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:punch_policy:ALL"
 $ScopeWorkflowManageAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:workflow:manage:ALL"
@@ -250,6 +259,7 @@ $BenefitPlanId       = New-DeterministicUuid -Seed "${Schema}:benefit_plan:base"
 
 # Expense (0015)
 $ExpenseCategoryId   = New-DeterministicUuid -Seed "${Schema}:expense_category:travel"
+$ExpensePolicyTravelAllId = New-DeterministicUuid -Seed "${Schema}:expense_policy:travel:all"
 $ExpenseId           = New-DeterministicUuid -Seed "${Schema}:expense:1"
 
 # Onboarding (0017)
@@ -308,6 +318,10 @@ $ExpenseWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:ex
 $ExpenseWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:1"
 $ExpenseWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:2"
 $ExpenseWorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:expense:1"
+$TravelWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:travel-approval"
+$TravelWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:travel:1"
+$TravelWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:travel:2"
+$TravelWorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:travel:1"
 $TimesheetWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:timesheet-approval"
 $TimesheetWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:timesheet:1"
 $TimesheetWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:timesheet:2"
@@ -376,8 +390,16 @@ INSERT INTO "$Schema".department (id, tenant_id, name, code)
 VALUES ('$DepartmentId', '$TenantId', 'Engineering', 'ENG')
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".department (id, tenant_id, name, code)
+VALUES ('$DepartmentAccountingId', '$TenantId', 'Accounting', 'ACC')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".designation (id, tenant_id, department_id, title, level, grade)
 VALUES ('$DesignationId', '$TenantId', '$DepartmentId', 'Software Engineer', 'IC2', 2)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".designation (id, tenant_id, department_id, title, level, grade)
+VALUES ('$DesignationAccountingId', '$TenantId', '$DepartmentAccountingId', 'Senior Accountant', 'IC2', 3)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
@@ -441,6 +463,10 @@ INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is
 VALUES ('$RoleTenantAdminId', '$TenantId', 'TENANT_ADMIN', 'Tenant administrator — admin shell + HR configuration', true, false)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
+VALUES ('$RoleAccountingApproverId', '$TenantId', 'ACCOUNTING_APPROVER', 'Accounting / finance second-line approver for expense and travel workflows', true, false)
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
 VALUES ('$TenantAdminUserId', '$TenantId', 'tenant-admin@kabipay.local', '$PasswordHash', true, false)
 ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true;
@@ -452,6 +478,20 @@ INSERT INTO "$Schema".employee (
 ) VALUES (
     '$TenantAdminEmployeeId', '$TenantId', '$TenantAdminUserId', '$DepartmentId', '$DesignationId',
     'EMP0998', 'Tenant', 'Administrator', 'PERMANENT', 'ACTIVE',
+    CURRENT_DATE, '$ManagerEmployeeId'
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
+VALUES ('$AccountingUserId', '$TenantId', 'accountant@kabipay.local', '$PasswordHash', true, false)
+ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true;
+
+INSERT INTO "$Schema".employee (
+    id, tenant_id, user_id, department_id, designation_id,
+    employee_code, first_name, last_name, employment_type, status,
+    date_of_joining, reporting_manager_id
+) VALUES (
+    '$AccountingEmployeeId', '$TenantId', '$AccountingUserId', '$DepartmentAccountingId', '$DesignationAccountingId',
+    'EMP0004', 'Finance', 'Reviewer', 'PERMANENT', 'ACTIVE',
     CURRENT_DATE, '$ManagerEmployeeId'
 ) ON CONFLICT (id) DO NOTHING;
 
@@ -483,6 +523,14 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermExpenseApproveId', 'expense', 'approve', '$ModuleExpenseId', 'Approve or reject expense claims')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermExpenseManageId', 'expense', 'manage', '$ModuleExpenseId', 'Configure expense categories and caps')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermExpensePayId', 'expense', 'pay', '$ModuleExpenseId', 'Mark expense reimbursements as paid or update payment lifecycle')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
@@ -573,6 +621,10 @@ INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermTimesheetManageId', 'timesheet', 'manage', '$ModuleAttendanceId', 'Configure timesheet projects, tasks, and lock policy')
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermNotificationManageId', 'notification', 'manage', '$ModuleEmployeeId', 'Announcements, direct in-app notifications, and deletes')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermEmployeeWriteId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
@@ -583,6 +635,10 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermExpenseApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermExpenseManageId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
@@ -658,6 +714,10 @@ VALUES ('$RoleHrAdminId', '$PermTimesheetManageId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermNotificationManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermAttendanceRegularizeId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
@@ -675,6 +735,18 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleLineManagerId', '$PermExpenseApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermExpensePayId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleAccountingApproverId', '$PermExpenseApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleAccountingApproverId', '$PermExpensePayId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
@@ -725,6 +797,10 @@ INSERT INTO "$Schema".user_role (user_id, role_id)
 VALUES ('$ManagerUserId', '$RoleLineManagerId')
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$AccountingUserId', '$RoleAccountingApproverId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 SELECT '$RoleTenantAdminId', rp.permission_id
 FROM "$Schema".role_permission rp
@@ -758,7 +834,8 @@ VALUES
   ('$ScopeTimesheetApproveAllId', '$TenantId', '$RoleHrAdminId', 'timesheet', 'approve', 'ALL'),
   ('$ScopeTimesheetApproveTeamLmId', '$TenantId', '$RoleLineManagerId', 'timesheet', 'approve', 'TEAM'),
   ('$ScopeScopeLeaveTeamLmId', '$TenantId', '$RoleLineManagerId', 'leave', 'approve', 'TEAM'),
-  ('$ScopeScopeExpenseTeamLmId', '$TenantId', '$RoleLineManagerId', 'expense', 'approve', 'TEAM')
+  ('$ScopeScopeExpenseTeamLmId', '$TenantId', '$RoleLineManagerId', 'expense', 'approve', 'TEAM'),
+  ('$ScopeScopeExpenseAcctAllId', '$TenantId', '$RoleAccountingApproverId', 'expense', 'approve', 'ALL')
 ON CONFLICT (role_id, resource, action) DO NOTHING;
 "@
 Invoke-TenantSql -Label "0000 foundation (department, designation, user, employee)" -Sql $SqlFoundation
@@ -959,6 +1036,16 @@ $SqlExpense = @"
 INSERT INTO "$Schema".expense_category (id, tenant_id, name, code, max_amount_per_claim)
 VALUES ('$ExpenseCategoryId', '$TenantId', 'Travel', 'TRAVEL', 50000)
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".expense_policy (
+    id, tenant_id, expense_category_id,
+    limit_per_day, limit_per_month, receipt_required, approval_required,
+    applicable_to, department_id, designation_id, role_id, max_amount_per_claim
+) VALUES (
+    '$ExpensePolicyTravelAllId', '$TenantId', '$ExpenseCategoryId',
+    NULL, NULL, false, true,
+    'ALL', NULL, NULL, NULL, NULL
+) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".expense (
     id, tenant_id, employee_id, expense_category_id,
@@ -1273,8 +1360,8 @@ INSERT INTO "$Schema".workflow_step (
     id, tenant_id, workflow_id, sequence_order, step_name,
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
-    '$ExpenseWorkflowStep2Id', '$TenantId', '$ExpenseWorkflowId', 2, 'HR / Finance verification',
-    'ROLE', '$RoleHrAdminId', false, NULL
+    '$ExpenseWorkflowStep2Id', '$TenantId', '$ExpenseWorkflowId', 2, 'Accounting verification',
+    'ROLE', '$RoleAccountingApproverId', false, NULL
 ) ON CONFLICT (id) DO UPDATE SET
     sequence_order = EXCLUDED.sequence_order,
     step_name = EXCLUDED.step_name,
@@ -1297,6 +1384,55 @@ INSERT INTO "$Schema".workflow_instance (
 UPDATE "$Schema".expense
 SET workflow_instance_id = '$ExpenseWorkflowInstanceId', updated_at = NOW()
 WHERE id = '$ExpenseId' AND (workflow_instance_id IS DISTINCT FROM '$ExpenseWorkflowInstanceId');
+
+INSERT INTO "$Schema".workflow (id, tenant_id, name, entity_type, is_active)
+VALUES ('$TravelWorkflowId', '$TenantId', 'Travel pre-approval', 'TRAVEL_REQUEST', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$TravelWorkflowStep1Id', '$TenantId', '$TravelWorkflowId', 1, 'Reporting manager',
+    'REPORTING_MANAGER', NULL, false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$TravelWorkflowStep2Id', '$TenantId', '$TravelWorkflowId', 2, 'Accounting clearance',
+    'ROLE', '$RoleAccountingApproverId', false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
+
+INSERT INTO "$Schema".workflow_instance (
+    id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id
+) VALUES (
+    '$TravelWorkflowInstanceId', '$TenantId', '$TravelWorkflowId',
+    'TRAVEL_REQUEST', '$TravelRequestId', 'IN_PROGRESS', '$TravelWorkflowStep1Id'
+) ON CONFLICT (id) DO UPDATE SET
+    current_step_id = EXCLUDED.current_step_id,
+    status = EXCLUDED.status,
+    updated_at = NOW();
+
+UPDATE "$Schema".travel_request
+SET workflow_instance_id = '$TravelWorkflowInstanceId', updated_at = NOW()
+WHERE id = '$TravelRequestId' AND tenant_id = '$TenantId'
+  AND (workflow_instance_id IS DISTINCT FROM '$TravelWorkflowInstanceId');
 
 INSERT INTO "$Schema".workflow (id, tenant_id, name, entity_type, is_active)
 VALUES ('$TimesheetWorkflowId', '$TenantId', 'Timesheet week approval', 'TIMESHEET_WEEK_BATCH', true)

@@ -155,6 +155,31 @@ pub async fn resolve_client_employee_id(
     Ok(m.id)
 }
 
+/// Department and location ids for the caller's **employee** profile, when present.
+///
+/// Returns `Ok(None)` when the user has no linked employee row (e.g. service account) or JWT-only dev path.
+pub async fn try_client_employee_dept_and_location(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    claims: &ClientClaims,
+) -> KabiPayResult<Option<(Option<Uuid>, Option<Uuid>)>> {
+    let emp = if let Some(eid) = claims.employee_id {
+        employee::Entity::find_by_id(eid)
+            .filter(employee::Column::TenantId.eq(tenant_id))
+            .filter(employee::Column::IsDeleted.eq(false))
+            .one(db)
+            .await?
+    } else {
+        employee::Entity::find()
+            .filter(employee::Column::TenantId.eq(tenant_id))
+            .filter(employee::Column::UserId.eq(claims.sub))
+            .filter(employee::Column::IsDeleted.eq(false))
+            .one(db)
+            .await?
+    };
+    Ok(emp.map(|m| (m.department_id, m.location_id)))
+}
+
 /// Resolve a pooled SeaORM connection pinned to the tenant's schema.
 ///
 /// Requires that [`serve_subgraph`] attached `TenantDbCache`,

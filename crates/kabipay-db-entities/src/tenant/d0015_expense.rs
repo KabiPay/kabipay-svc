@@ -39,6 +39,12 @@ pub mod expense_policy {
         pub limit_per_month: Option<Decimal>,
         pub receipt_required: bool,
         pub approval_required: bool,
+        /// `ALL`, `DEPARTMENT`, `DESIGNATION`, or `ROLE` (scoped rows use matching FK).
+        pub applicable_to: String,
+        pub department_id: Option<Uuid>,
+        pub designation_id: Option<Uuid>,
+        pub role_id: Option<Uuid>,
+        pub max_amount_per_claim: Option<Decimal>,
         pub created_at: DateTimeUtc,
         pub updated_at: DateTimeUtc,
     }
@@ -65,6 +71,13 @@ pub mod expense {
         pub expense_date: NaiveDate,
         pub title: String,
         pub status: String,
+        /// Amount approved at financial sign-off (`APPROVED` / `PARTIAL_APPROVED`).
+        pub approved_amount: Option<Decimal>,
+        /// Reimbursement lifecycle: `NONE`, `PENDING_PAYMENT`, `PAID`, `FAILED`, `ON_HOLD`.
+        pub payment_status: String,
+        pub paid_at: Option<DateTimeUtc>,
+        pub payment_reference: Option<String>,
+        pub receipt_file_storage_id: Option<Uuid>,
         pub travel_request_id: Option<Uuid>,
         pub rejection_reason: Option<String>,
         pub approved_by: Option<Uuid>,

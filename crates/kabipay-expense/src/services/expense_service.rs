@@ -1,12 +1,14 @@
 //! Tenant-scoped SeaORM queries and commands for expenses.
 
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use kabipay_common::client_data_scope::EmployeeScopeFilter;
 use kabipay_common::workflow_approval;
 use kabipay_common::workflow_current_step;
 use kabipay_common::{KabiPayError, KabiPayResult};
+use kabipay_db_entities::tenant::d0005_auth_rbac::user_role;
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
-use kabipay_db_entities::tenant::d0015_expense::{expense, expense_category};
+use kabipay_db_entities::tenant::d0015_expense::{expense, expense_category, expense_policy};
+use kabipay_db_entities::tenant::d0029_file_storage::file_storage;
 use kabipay_db_entities::tenant::d0025_workflow::{
     workflow, workflow_action, workflow_instance, workflow_step,
 };
@@ -35,6 +37,23 @@ pub async fn list_categories(
         .all(db)
         .await
         .map_err(KabiPayError::from)
+}
+
+pub async fn get_expense_category(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    category_id: Uuid,
+) -> KabiPayResult<expense_category::Model> {
+    expense_category::Entity::find()
+        .filter(expense_category::Column::Id.eq(category_id))
+        .filter(expense_category::Column::TenantId.eq(tenant_id))
+        .filter(expense_category::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "expense_category",
+            id: category_id.to_string(),
+        })
 }
 
 pub async fn list_expenses(
@@ -80,12 +99,14 @@ pub async fn submit_expense(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     employee_id: Uuid,
+    logged_in_user_id: Uuid,
     expense_category_id: Uuid,
     amount: Decimal,
     currency: &str,
     expense_date: NaiveDate,
     title: &str,
     travel_request_id: Option<Uuid>,
+    receipt_file_storage_id: Option<Uuid>,
 ) -> KabiPayResult<expense::Model> {
     if amount <= Decimal::ZERO {
         return Err(KabiPayError::Validation(
@@ -95,7 +116,7 @@ pub async fn submit_expense(
 
     let txn = db.begin().await?;
 
-    let _cat = expense_category::Entity::find()
+    let cat = expense_category::Entity::find()
         .filter(expense_category::Column::Id.eq(expense_category_id))
         .filter(expense_category::Column::TenantId.eq(tenant_id))
         .filter(expense_category::Column::IsDeleted.eq(false))
@@ -105,6 +126,52 @@ pub async fn submit_expense(
             entity: "expense_category",
             id: expense_category_id.to_string(),
         })?;
+
+    let constraints = resolve_expense_submit_constraints(
+        &txn,
+        tenant_id,
+        expense_category_id,
+        employee_id,
+        cat.max_amount_per_claim,
+    )
+    .await?;
+
+    if let Some(cap) = constraints.max_amount_per_claim {
+        if amount > cap {
+            return Err(KabiPayError::Validation(format!(
+                "amount exceeds permitted cap for this category ({cap})",
+            )));
+        }
+    }
+
+    if let Some(ml) = constraints.limit_per_month {
+        let (ms, me) = expense_month_bounds(expense_date);
+        let already = sum_month_claimed_for_category(
+            &txn,
+            tenant_id,
+            employee_id,
+            expense_category_id,
+            ms,
+            me,
+        )
+        .await?;
+        if already + amount > ml {
+            return Err(KabiPayError::Validation(format!(
+                "would exceed monthly limit for this category ({ml}; already claimed {already})",
+            )));
+        }
+    }
+
+    if constraints.receipt_required {
+        let fid = receipt_file_storage_id.ok_or_else(|| {
+            KabiPayError::Validation(
+                "a receipt attachment is required for this category/policy".into(),
+            )
+        })?;
+        assert_receipt_file_owned(&txn, tenant_id, fid, logged_in_user_id).await?;
+    } else if let Some(fid) = receipt_file_storage_id {
+        assert_receipt_file_owned(&txn, tenant_id, fid, logged_in_user_id).await?;
+    }
 
     if let Some(tid) = travel_request_id {
         let t = travel_request::Entity::find()
@@ -135,6 +202,11 @@ pub async fn submit_expense(
         expense_date: Set(expense_date),
         title: Set(title.to_string()),
         status: Set("PENDING".into()),
+        approved_amount: Set(None),
+        payment_status: Set(PAYMENT_STATUS_NONE.into()),
+        paid_at: Set(None),
+        payment_reference: Set(None),
+        receipt_file_storage_id: Set(receipt_file_storage_id),
         travel_request_id: Set(travel_request_id),
         rejection_reason: Set(None),
         approved_by: Set(None),
@@ -229,17 +301,231 @@ pub fn parse_amount(s: &str) -> KabiPayResult<Decimal> {
 
 const STATUS_PENDING: &str = "PENDING";
 const STATUS_APPROVED: &str = "APPROVED";
+const STATUS_PARTIAL_APPROVED: &str = "PARTIAL_APPROVED";
 const STATUS_REJECTED: &str = "REJECTED";
+
+pub const PAYMENT_STATUS_NONE: &str = "NONE";
+pub const PAYMENT_STATUS_PENDING: &str = "PENDING_PAYMENT";
+pub const PAYMENT_STATUS_PAID: &str = "PAID";
+pub const PAYMENT_STATUS_FAILED: &str = "FAILED";
+pub const PAYMENT_STATUS_ON_HOLD: &str = "ON_HOLD";
+
+const POLICY_ALL: &str = "ALL";
+const POLICY_DEPT: &str = "DEPARTMENT";
+const POLICY_DES: &str = "DESIGNATION";
+const POLICY_ROLE: &str = "ROLE";
+
+fn expense_month_bounds(d: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let first = NaiveDate::from_ymd_opt(d.year(), d.month(), 1)
+        .expect("valid month first day");
+    let (ny, nm) = if d.month() == 12 {
+        (d.year() + 1, 1)
+    } else {
+        (d.year(), d.month() + 1)
+    };
+    let next_first =
+        NaiveDate::from_ymd_opt(ny, nm, 1).expect("valid next month first day");
+    let last = next_first
+        .pred_opt()
+        .expect("day before first of month exists");
+    (first, last)
+}
+
+fn policy_specificity_score(applicable_to: &str) -> i32 {
+    match applicable_to {
+        POLICY_DEPT => 4,
+        POLICY_DES => 3,
+        POLICY_ROLE => 2,
+        _ => 1,
+    }
+}
+
+fn policy_applies_to_employee(
+    p: &expense_policy::Model,
+    emp: &employee::Model,
+    user_role_ids: &[Uuid],
+) -> bool {
+    match p.applicable_to.as_str() {
+        POLICY_ALL => true,
+        POLICY_DEPT => p
+            .department_id
+            .is_some_and(|d| Some(d) == emp.department_id),
+        POLICY_DES => p
+            .designation_id
+            .is_some_and(|d| Some(d) == emp.designation_id),
+        POLICY_ROLE => p
+            .role_id
+            .is_some_and(|rid| user_role_ids.iter().any(|u| *u == rid)),
+        _ => false,
+    }
+}
+
+/// Effective caps and receipt rule for one employee × category (best-matching policy tier).
+pub struct ExpenseSubmitConstraints {
+    pub receipt_required: bool,
+    pub max_amount_per_claim: Option<Decimal>,
+    pub limit_per_month: Option<Decimal>,
+}
+
+pub async fn resolve_expense_submit_constraints(
+    db: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    employee_id: Uuid,
+    category_max: Option<Decimal>,
+) -> KabiPayResult<ExpenseSubmitConstraints> {
+    let emp = employee::Entity::find_by_id(employee_id)
+        .filter(employee::Column::TenantId.eq(tenant_id))
+        .filter(employee::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "employee",
+            id: employee_id.to_string(),
+        })?;
+
+    let user_roles: Vec<Uuid> = if let Some(uid) = emp.user_id {
+        user_role::Entity::find()
+            .filter(user_role::Column::UserId.eq(uid))
+            .all(db)
+            .await
+            .map_err(KabiPayError::from)?
+            .into_iter()
+            .map(|r| r.role_id)
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let policies = expense_policy::Entity::find()
+        .filter(expense_policy::Column::TenantId.eq(tenant_id))
+        .filter(expense_policy::Column::ExpenseCategoryId.eq(category_id))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+
+    if policies.is_empty() {
+        return Ok(ExpenseSubmitConstraints {
+            receipt_required: false,
+            max_amount_per_claim: category_max,
+            limit_per_month: None,
+        });
+    }
+
+    let applicable: Vec<&expense_policy::Model> = policies
+        .iter()
+        .filter(|p| policy_applies_to_employee(p, &emp, &user_roles))
+        .collect();
+
+    let tier_models: Vec<&expense_policy::Model> = if applicable.is_empty() {
+        policies.iter().filter(|p| p.applicable_to == POLICY_ALL).collect()
+    } else {
+        let best = applicable
+            .iter()
+            .map(|p| policy_specificity_score(p.applicable_to.as_str()))
+            .max()
+            .unwrap_or(1);
+        applicable
+            .into_iter()
+            .filter(|p| policy_specificity_score(p.applicable_to.as_str()) == best)
+            .collect()
+    };
+
+    if tier_models.is_empty() {
+        return Ok(ExpenseSubmitConstraints {
+            receipt_required: false,
+            max_amount_per_claim: category_max,
+            limit_per_month: None,
+        });
+    }
+
+    let receipt_required = tier_models.iter().any(|p| p.receipt_required);
+
+    let mut caps: Vec<Decimal> = Vec::new();
+    if let Some(c) = category_max.filter(|x| *x > Decimal::ZERO) {
+        caps.push(c);
+    }
+    for p in &tier_models {
+        if let Some(x) = p.max_amount_per_claim.filter(|v| *v > Decimal::ZERO) {
+            caps.push(x);
+        }
+        if let Some(x) = p.limit_per_day.filter(|v| *v > Decimal::ZERO) {
+            caps.push(x);
+        }
+    }
+    let max_amount_per_claim = caps.into_iter().min();
+
+    let month_limits: Vec<Decimal> = tier_models
+        .iter()
+        .filter_map(|p| p.limit_per_month.filter(|v| *v > Decimal::ZERO))
+        .collect();
+    let limit_per_month = month_limits.into_iter().min();
+
+    Ok(ExpenseSubmitConstraints {
+        receipt_required,
+        max_amount_per_claim,
+        limit_per_month,
+    })
+}
+
+async fn sum_month_claimed_for_category(
+    db: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    category_id: Uuid,
+    month_start: NaiveDate,
+    month_end: NaiveDate,
+) -> KabiPayResult<Decimal> {
+    let rows = expense::Entity::find()
+        .filter(expense::Column::TenantId.eq(tenant_id))
+        .filter(expense::Column::EmployeeId.eq(employee_id))
+        .filter(expense::Column::ExpenseCategoryId.eq(category_id))
+        .filter(expense::Column::IsDeleted.eq(false))
+        .filter(expense::Column::ExpenseDate.gte(month_start))
+        .filter(expense::Column::ExpenseDate.lte(month_end))
+        .filter(expense::Column::Status.is_in(vec![
+            STATUS_PENDING.to_string(),
+            STATUS_APPROVED.to_string(),
+            STATUS_PARTIAL_APPROVED.to_string(),
+        ]))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    Ok(rows.iter().map(|e| e.amount).sum())
+}
+
+async fn assert_receipt_file_owned(
+    db: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    file_id: Uuid,
+    uploader_user_id: Uuid,
+) -> KabiPayResult<()> {
+    let f = file_storage::Entity::find_by_id(file_id)
+        .filter(file_storage::Column::TenantId.eq(tenant_id))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "file_storage",
+            id: file_id.to_string(),
+        })?;
+    if f.uploaded_by != Some(uploader_user_id) {
+        return Err(KabiPayError::Validation(
+            "receipt file must be uploaded by the submitting user".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Matches **`outbox_event.status`** (`PENDING` until worker processes — **M7**).
 const OUTBOX_STATUS_PENDING: &str = "PENDING";
 
-/// Mark expense **APPROVED**, enqueue **`outbox_event`** (**M33 / Gap G**, same transaction as leave **M6**).
+/// Financial sign-off: **APPROVED** / **PARTIAL_APPROVED**, **`approved_amount`**, **`PENDING_PAYMENT`**, and outbox enqueue (**M33**).
 async fn finalize_expense_approval(
     txn: &impl ConnectionTrait,
     tenant_id: Uuid,
     expense_id: Uuid,
     approver_user_id: Uuid,
+    approved_financial: Decimal,
     now: chrono::DateTime<Utc>,
 ) -> KabiPayResult<expense::Model> {
     let m = expense::Entity::find()
@@ -251,10 +537,31 @@ async fn finalize_expense_approval(
             entity: "expense",
             id: expense_id.to_string(),
         })?;
+
+    let claim = m.amount.normalize();
+    let fin = approved_financial.normalize();
+    if fin <= Decimal::ZERO {
+        return Err(KabiPayError::Validation(
+            "approved amount must be greater than zero".into(),
+        ));
+    }
+    if fin > claim {
+        return Err(KabiPayError::Validation(
+            "approved amount cannot exceed the claimed amount".into(),
+        ));
+    }
+    let status_fin = if fin < claim {
+        STATUS_PARTIAL_APPROVED
+    } else {
+        STATUS_APPROVED
+    };
+
     let mut am: expense::ActiveModel = m.into();
-    am.status = Set(STATUS_APPROVED.into());
+    am.status = Set(status_fin.into());
     am.rejection_reason = Set(None);
     am.approved_by = Set(Some(approver_user_id));
+    am.approved_amount = Set(Some(fin));
+    am.payment_status = Set(PAYMENT_STATUS_PENDING.into());
     am.updated_at = Set(now);
     am.update(txn).await?;
     let out = expense::Entity::find()
@@ -265,15 +572,17 @@ async fn finalize_expense_approval(
         .ok_or_else(|| KabiPayError::Internal("updated expense not found".into()))?;
 
     let payload = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "expense_id": out.id,
         "employee_id": out.employee_id,
         "expense_category_id": out.expense_category_id,
         "approver_user_id": approver_user_id,
         "amount": out.amount.normalize().to_string(),
+        "approved_amount": out.approved_amount.map(|v| v.normalize().to_string()),
         "currency": out.currency,
         "expense_date": out.expense_date.to_string(),
         "status": out.status,
+        "payment_status": out.payment_status,
         "title": out.title,
     });
     let ob = outbox_event::ActiveModel {
@@ -294,6 +603,30 @@ async fn finalize_expense_approval(
     Ok(out)
 }
 
+fn resolve_final_approved_amount(
+    claim_amount: Decimal,
+    approved_amount: Option<Decimal>,
+) -> KabiPayResult<Decimal> {
+    let claim = claim_amount.normalize();
+    match approved_amount {
+        None => Ok(claim),
+        Some(x) => {
+            let f = x.normalize();
+            if f <= Decimal::ZERO {
+                return Err(KabiPayError::Validation(
+                    "approved amount must be greater than zero".into(),
+                ));
+            }
+            if f > claim {
+                return Err(KabiPayError::Validation(
+                    "approved amount cannot exceed the claimed amount".into(),
+                ));
+            }
+            Ok(f)
+        }
+    }
+}
+
 /// Approve routing: **`workflow_instance`** multi-step (**M32**) — intermediate steps advance the
 /// instance without setting **APPROVED**; legacy **PENDING** with no workflow is single-step approve.
 pub async fn approve_expense(
@@ -301,6 +634,7 @@ pub async fn approve_expense(
     tenant_id: Uuid,
     expense_id: Uuid,
     approver_user_id: Uuid,
+    approved_amount: Option<Decimal>,
 ) -> KabiPayResult<expense::Model> {
     let txn = db.begin().await?;
     let model = load_pending_expense_conn(&txn, tenant_id, expense_id).await?;
@@ -362,6 +696,11 @@ pub async fn approve_expense(
             .await?;
 
         if let Some(next) = next_step {
+            if approved_amount.is_some() {
+                return Err(KabiPayError::Validation(
+                    "approved financial amount applies only on the final approval step".into(),
+                ));
+            }
             let mut am_inst: workflow_instance::ActiveModel = inst.into();
             am_inst.current_step_id = Set(Some(next.id));
             am_inst.updated_at = Set(now);
@@ -380,7 +719,8 @@ pub async fn approve_expense(
         am_inst.updated_at = Set(now);
         am_inst.update(&txn).await?;
 
-        finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, now).await?;
+        let fin = resolve_final_approved_amount(model.amount, approved_amount)?;
+        finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, fin, now).await?;
     } else {
         if !workflow_approval::user_has_permission_via_roles(
             &txn,
@@ -396,7 +736,8 @@ pub async fn approve_expense(
                     .into(),
             ));
         }
-        finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, now).await?;
+        let fin = resolve_final_approved_amount(model.amount, approved_amount)?;
+        finalize_expense_approval(&txn, tenant_id, expense_id, approver_user_id, fin, now).await?;
     }
 
     txn.commit().await?;
@@ -406,12 +747,22 @@ pub async fn approve_expense(
         .await?
         .ok_or_else(|| KabiPayError::Internal("expense missing after approve".into()))?;
 
+    let note = match out.status.as_str() {
+        STATUS_PARTIAL_APPROVED => format!(
+            "Partially approved — reimbursable amount {} {}.",
+            out.approved_amount
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "?".into()),
+            out.currency
+        ),
+        _ => "Approved.".to_string(),
+    };
     expense_notify_employee(
         db,
         tenant_id,
         out.employee_id,
         "Expense approved",
-        &format!("Your expense claim \"{}\" was approved.", out.title),
+        &format!("Your expense claim \"{}\" {}", out.title, note),
     )
     .await;
     Ok(out)
@@ -498,6 +849,10 @@ pub async fn reject_expense(
     am.status = Set(STATUS_REJECTED.into());
     am.rejection_reason = Set(rejection_reason.clone());
     am.approved_by = Set(None);
+    am.approved_amount = Set(None);
+    am.payment_status = Set(PAYMENT_STATUS_NONE.into());
+    am.paid_at = Set(None);
+    am.payment_reference = Set(None);
     am.updated_at = Set(now);
     am.update(&txn).await?;
 
@@ -541,6 +896,365 @@ async fn load_pending_expense_conn(
         ));
     }
     Ok(m)
+}
+
+/// Upsert **`expense_category`** (tenant master data for claim types). Caller enforces **`expense:manage`**.
+pub async fn upsert_expense_category(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    id: Option<Uuid>,
+    name: &str,
+    code: &str,
+    max_amount_per_claim: Option<Decimal>,
+) -> KabiPayResult<expense_category::Model> {
+    let name = name.trim();
+    let code = code.trim().to_ascii_uppercase();
+    if name.is_empty() || code.is_empty() {
+        return Err(KabiPayError::Validation(
+            "category name and code are required".into(),
+        ));
+    }
+    let now = Utc::now();
+    if let Some(mid) = id {
+        let m = expense_category::Entity::find()
+            .filter(expense_category::Column::Id.eq(mid))
+            .filter(expense_category::Column::TenantId.eq(tenant_id))
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::NotFound {
+                entity: "expense_category",
+                id: mid.to_string(),
+            })?;
+        if m.is_deleted {
+            return Err(KabiPayError::Validation(
+                "cannot update a deleted expense category".into(),
+            ));
+        }
+        let dup = expense_category::Entity::find()
+            .filter(expense_category::Column::TenantId.eq(tenant_id))
+            .filter(expense_category::Column::Code.eq(code.clone()))
+            .filter(expense_category::Column::Id.ne(mid))
+            .filter(expense_category::Column::IsDeleted.eq(false))
+            .one(db)
+            .await?;
+        if dup.is_some() {
+            return Err(KabiPayError::Validation(format!(
+                "expense category code `{code}` is already in use"
+            )));
+        }
+        let mut am: expense_category::ActiveModel = m.into();
+        am.name = Set(name.to_string());
+        am.code = Set(code.clone());
+        am.max_amount_per_claim = Set(max_amount_per_claim);
+        am.updated_at = Set(now);
+        am.update(db).await?;
+        expense_category::Entity::find_by_id(mid)
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::Internal("updated expense category not found".into()))
+    } else {
+        let exists = expense_category::Entity::find()
+            .filter(expense_category::Column::TenantId.eq(tenant_id))
+            .filter(expense_category::Column::Code.eq(code.clone()))
+            .filter(expense_category::Column::IsDeleted.eq(false))
+            .one(db)
+            .await?;
+        if exists.is_some() {
+            return Err(KabiPayError::Validation(format!(
+                "expense category code `{code}` is already in use"
+            )));
+        }
+        let pk = Uuid::new_v4();
+        let am = expense_category::ActiveModel {
+            id: Set(pk),
+            tenant_id: Set(tenant_id),
+            name: Set(name.to_string()),
+            code: Set(code),
+            max_amount_per_claim: Set(max_amount_per_claim),
+            is_deleted: Set(false),
+            deleted_at: Set(None),
+            deleted_by: Set(None),
+            created_at: Set(now),
+            updated_at: Set(now),
+        };
+        am.insert(db).await?;
+        expense_category::Entity::find_by_id(pk)
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::Internal("inserted expense category not found".into()))
+    }
+}
+
+pub async fn delete_expense_category(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    acting_user_id: Uuid,
+    id: Uuid,
+) -> KabiPayResult<()> {
+    let m = expense_category::Entity::find()
+        .filter(expense_category::Column::Id.eq(id))
+        .filter(expense_category::Column::TenantId.eq(tenant_id))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "expense_category",
+            id: id.to_string(),
+        })?;
+    if m.is_deleted {
+        return Ok(());
+    }
+    let now = Utc::now();
+    let mut am: expense_category::ActiveModel = m.into();
+    am.is_deleted = Set(true);
+    am.deleted_at = Set(Some(now));
+    am.deleted_by = Set(Some(acting_user_id));
+    am.updated_at = Set(now);
+    am.update(db).await?;
+    Ok(())
+}
+
+pub fn normalize_expense_payment_status_wire(s: &str) -> KabiPayResult<&'static str> {
+    match s.trim() {
+        "NONE" | "none" => Ok(PAYMENT_STATUS_NONE),
+        "PENDING_PAYMENT" | "pending_payment" | "PendingPayment" => Ok(PAYMENT_STATUS_PENDING),
+        "PAID" | "paid" => Ok(PAYMENT_STATUS_PAID),
+        "FAILED" | "failed" => Ok(PAYMENT_STATUS_FAILED),
+        "ON_HOLD" | "on_hold" | "OnHold" => Ok(PAYMENT_STATUS_ON_HOLD),
+        _ => Err(KabiPayError::Validation(
+            "unknown expense payment status; expected NONE | PENDING_PAYMENT | PAID | FAILED | ON_HOLD"
+                .into(),
+        )),
+    }
+}
+
+pub async fn mark_expense_payment_status(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    expense_id: Uuid,
+    new_payment_status: &str,
+    payment_reference: Option<&str>,
+) -> KabiPayResult<expense::Model> {
+    let pst = normalize_expense_payment_status_wire(new_payment_status)?;
+    let m = expense::Entity::find()
+        .filter(expense::Column::Id.eq(expense_id))
+        .filter(expense::Column::TenantId.eq(tenant_id))
+        .filter(expense::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "expense",
+            id: expense_id.to_string(),
+        })?;
+    if m.status != STATUS_APPROVED && m.status != STATUS_PARTIAL_APPROVED {
+        return Err(KabiPayError::Validation(
+            "payment status can only change for financially approved expense claims".into(),
+        ));
+    }
+    let now = Utc::now();
+    let mut am: expense::ActiveModel = m.into();
+    am.payment_status = Set(pst.to_string());
+    match pst {
+        PAYMENT_STATUS_PAID => {
+            am.paid_at = Set(Some(now));
+            let pref = payment_reference.map(str::trim).filter(|x| !x.is_empty());
+            am.payment_reference = Set(pref.map(|s| s.to_string()));
+        }
+        PAYMENT_STATUS_PENDING => {
+            am.paid_at = Set(None);
+            am.payment_reference = Set(
+                payment_reference
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                    .map(|s| s.to_string()),
+            );
+        }
+        PAYMENT_STATUS_NONE => {
+            am.paid_at = Set(None);
+            am.payment_reference = Set(None);
+        }
+        PAYMENT_STATUS_FAILED => {
+            am.paid_at = Set(None);
+            let pref = payment_reference.map(str::trim).filter(|x| !x.is_empty());
+            am.payment_reference = Set(pref.map(|s| s.to_string()));
+        }
+        PAYMENT_STATUS_ON_HOLD => {
+            am.paid_at = Set(None);
+            let pref = payment_reference.map(str::trim).filter(|x| !x.is_empty());
+            am.payment_reference = Set(pref.map(|s| s.to_string()));
+        }
+        _ => {
+            return Err(KabiPayError::Internal(
+                "normalized payment status unexpectedly failed to match constants".into(),
+            ));
+        }
+    }
+    am.updated_at = Set(now);
+    am.update(db).await?;
+
+    expense::Entity::find_by_id(expense_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::Internal("expense missing after payment update".into()))
+}
+
+fn expense_policy_validate_scope(applicable_to: &str, dept: Option<Uuid>, des: Option<Uuid>, rol: Option<Uuid>) -> KabiPayResult<()> {
+    let at = applicable_to.trim();
+    match at {
+        POLICY_ALL => {
+            if dept.is_some() || des.is_some() || rol.is_some() {
+                return Err(KabiPayError::Validation(
+                    "policy applicable ALL requires department, designation, and role identifiers to be unset"
+                        .into(),
+                ));
+            }
+            Ok(())
+        }
+        POLICY_DEPT => {
+            if dept.is_none() || des.is_some() || rol.is_some() {
+                return Err(KabiPayError::Validation(
+                    "policy applicable DEPARTMENT requires department_id".into(),
+                ));
+            }
+            Ok(())
+        }
+        POLICY_DES => {
+            if des.is_none() || dept.is_some() || rol.is_some() {
+                return Err(KabiPayError::Validation(
+                    "policy applicable DESIGNATION requires designation_id".into(),
+                ));
+            }
+            Ok(())
+        }
+        POLICY_ROLE => {
+            if rol.is_none() || dept.is_some() || des.is_some() {
+                return Err(KabiPayError::Validation(
+                    "policy applicable ROLE requires role_id".into(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(KabiPayError::Validation(format!(
+            "unsupported applicable_to `{applicable_to}` (use ALL | DEPARTMENT | DESIGNATION | ROLE)"
+        ))),
+    }
+}
+
+pub async fn list_expense_policies_for_category(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    expense_category_id: Uuid,
+) -> KabiPayResult<Vec<expense_policy::Model>> {
+    expense_policy::Entity::find()
+        .filter(expense_policy::Column::TenantId.eq(tenant_id))
+        .filter(expense_policy::Column::ExpenseCategoryId.eq(expense_category_id))
+        .order_by_asc(expense_policy::Column::ApplicableTo)
+        .order_by_desc(expense_policy::Column::UpdatedAt)
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)
+}
+
+pub async fn upsert_expense_policy_admin(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    id: Option<Uuid>,
+    expense_category_id: Uuid,
+    applicable_to: &str,
+    department_id: Option<Uuid>,
+    designation_id: Option<Uuid>,
+    role_id: Option<Uuid>,
+    limit_per_day: Option<Decimal>,
+    limit_per_month: Option<Decimal>,
+    max_amount_per_claim: Option<Decimal>,
+    receipt_required: bool,
+    approval_required: bool,
+) -> KabiPayResult<expense_policy::Model> {
+    let at_trim = applicable_to.trim();
+    expense_policy_validate_scope(at_trim, department_id, designation_id, role_id)?;
+
+    let _cat = expense_category::Entity::find()
+        .filter(expense_category::Column::Id.eq(expense_category_id))
+        .filter(expense_category::Column::TenantId.eq(tenant_id))
+        .filter(expense_category::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "expense_category",
+            id: expense_category_id.to_string(),
+        })?;
+
+    let now = Utc::now();
+    let at_owned = at_trim.to_string();
+    if let Some(pid) = id {
+        let m = expense_policy::Entity::find()
+            .filter(expense_policy::Column::Id.eq(pid))
+            .filter(expense_policy::Column::TenantId.eq(tenant_id))
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::NotFound {
+                entity: "expense_policy",
+                id: pid.to_string(),
+            })?;
+        let mut am: expense_policy::ActiveModel = m.into();
+        am.expense_category_id = Set(expense_category_id);
+        am.limit_per_day = Set(limit_per_day);
+        am.limit_per_month = Set(limit_per_month);
+        am.receipt_required = Set(receipt_required);
+        am.approval_required = Set(approval_required);
+        am.applicable_to = Set(at_owned);
+        am.department_id = Set(department_id);
+        am.designation_id = Set(designation_id);
+        am.role_id = Set(role_id);
+        am.max_amount_per_claim = Set(max_amount_per_claim);
+        am.updated_at = Set(now);
+        am.update(db).await?;
+        expense_policy::Entity::find_by_id(pid)
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::Internal("updated expense policy missing".into()))
+    } else {
+        let pk = Uuid::new_v4();
+        let am = expense_policy::ActiveModel {
+            id: Set(pk),
+            tenant_id: Set(tenant_id),
+            expense_category_id: Set(expense_category_id),
+            limit_per_day: Set(limit_per_day),
+            limit_per_month: Set(limit_per_month),
+            receipt_required: Set(receipt_required),
+            approval_required: Set(approval_required),
+            applicable_to: Set(at_owned),
+            department_id: Set(department_id),
+            designation_id: Set(designation_id),
+            role_id: Set(role_id),
+            max_amount_per_claim: Set(max_amount_per_claim),
+            created_at: Set(now),
+            updated_at: Set(now),
+        };
+        am.insert(db).await?;
+        expense_policy::Entity::find_by_id(pk)
+            .one(db)
+            .await?
+            .ok_or_else(|| KabiPayError::Internal("inserted expense policy missing".into()))
+    }
+}
+
+pub async fn delete_expense_policy_admin(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    policy_id: Uuid,
+) -> KabiPayResult<()> {
+    let deleted = expense_policy::Entity::delete_many()
+        .filter(expense_policy::Column::Id.eq(policy_id))
+        .filter(expense_policy::Column::TenantId.eq(tenant_id))
+        .exec(db)
+        .await?;
+    if deleted.rows_affected == 0 {
+        return Err(KabiPayError::NotFound {
+            entity: "expense_policy",
+            id: policy_id.to_string(),
+        });
+    }
+    Ok(())
 }
 
 async fn expense_notify_employee(

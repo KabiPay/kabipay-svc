@@ -12,7 +12,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
     QueryOrder, QuerySelect, Set,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::entities::d0007_employee_core::employee;
@@ -69,6 +69,41 @@ pub async fn find_by_id(
         .one(db)
         .await
         .map_err(KabiPayError::from)
+}
+
+/// Every employee in the reporting subtree under `root_employee_id` (including the root).
+/// Assumes an acyclic manager chain; terminates when no new direct reports appear.
+async fn collect_team_subtree_employee_ids(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    root_employee_id: Uuid,
+) -> KabiPayResult<Vec<Uuid>> {
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    seen.insert(root_employee_id);
+    let mut frontier = vec![root_employee_id];
+
+    loop {
+        if frontier.is_empty() {
+            break;
+        }
+
+        let children = employee::Entity::find()
+            .filter(employee::Column::TenantId.eq(tenant_id))
+            .filter(employee::Column::IsDeleted.eq(false))
+            .filter(employee::Column::ReportingManagerId.is_in(frontier.clone()))
+            .all(db)
+            .await
+            .map_err(KabiPayError::from)?;
+
+        frontier.clear();
+        for m in children {
+            if seen.insert(m.id) {
+                frontier.push(m.id);
+            }
+        }
+    }
+
+    Ok(seen.into_iter().collect())
 }
 
 /// Full display names for referenced employees (e.g. reporting manager labels).
@@ -187,11 +222,11 @@ pub async fn list_for_org_chart(
             let Some(v) = viewer else {
                 return Ok(vec![]);
             };
-            q = q.filter(
-                Condition::any()
-                    .add(employee::Column::Id.eq(v.employee_id))
-                    .add(employee::Column::ReportingManagerId.eq(v.employee_id)),
-            );
+            let ids = collect_team_subtree_employee_ids(db, tenant_id, v.employee_id).await?;
+            if ids.is_empty() {
+                return Ok(vec![]);
+            }
+            q = q.filter(employee::Column::Id.is_in(ids));
         }
         ScopeType::Department => {
             let Some(v) = viewer else {
