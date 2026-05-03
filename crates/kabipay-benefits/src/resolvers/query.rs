@@ -23,6 +23,13 @@ impl QueryRoot {
         #[graphql(default = 50)] limit: u64,
     ) -> Result<Vec<BenefitTypeDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_read_benefit_catalog_queries() {
+            return Err(
+                KabiPayError::Forbidden("benefits:self or benefits:manage permission required".into())
+                    .into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = benefits_service::list_types(&db, tenant_id, limit)
             .await
@@ -37,6 +44,13 @@ impl QueryRoot {
         #[graphql(default = 50)] limit: u64,
     ) -> Result<Vec<BenefitPlanDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_read_benefit_catalog_queries() {
+            return Err(
+                KabiPayError::Forbidden("benefits:self or benefits:manage permission required".into())
+                    .into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = benefits_service::list_plans(&db, tenant_id, active_only, limit)
             .await

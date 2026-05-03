@@ -24,6 +24,13 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: u64,
     ) -> Result<Vec<GrievanceCategoryDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_use_grievance_self_service() && !claims.can_manage_grievance_tenant_cases() {
+            return Err(
+                KabiPayError::Forbidden("grievance:self or grievance:manage permission required".into())
+                    .into_graphql(),
+            );
+        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = grievance_service::list_categories(&db, tenant_id, limit)
@@ -32,7 +39,7 @@ impl QueryRoot {
         Ok(rows.into_iter().map(GrievanceCategoryDto::from).collect())
     }
 
-    /// HR / directory roles see tenant-wide cases; other employees see **their own** cases only.
+    /// `grievance:manage` sees tenant-wide cases; others see **their own** cases only.
     async fn grievance_cases(
         &self,
         ctx: &Context<'_>,
@@ -41,7 +48,13 @@ impl QueryRoot {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let claims = require_client_claims(ctx)?;
-        let filter = if claims.can_manage_employee_directory() {
+        if !claims.can_use_grievance_self_service() && !claims.can_manage_grievance_tenant_cases() {
+            return Err(
+                KabiPayError::Forbidden("grievance:self or grievance:manage permission required".into())
+                    .into_graphql(),
+            );
+        }
+        let filter = if claims.can_manage_grievance_tenant_cases() {
             None
         } else {
             Some(

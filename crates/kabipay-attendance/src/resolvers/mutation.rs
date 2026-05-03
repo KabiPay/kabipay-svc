@@ -51,6 +51,15 @@ impl MutationRoot {
         input: Option<PunchTodayInput>,
     ) -> Result<AttendanceDto> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_record_own_attendance_punches() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "attendance:punch_self or employee directory permission required".into(),
+                )
+                .into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
             .await

@@ -75,6 +75,30 @@ fn require_employee_mutation_rbac(ctx: &Context<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Offboarding HR mutations: directory admins **or** `onboarding:manage`.
+fn require_offboarding_hr_mutation(ctx: &Context<'_>) -> Result<()> {
+    if ctx.data_opt::<ClientClaims>().is_none() {
+        if std::env::var("KABIPAY_EMPLOYEE_MUTATION_HEADER_OK").as_deref() == Ok("1") {
+            return Ok(());
+        }
+        return Err(KabiPayError::Unauthorised.into_graphql());
+    }
+    let claims = require_client_claims(ctx)?;
+    if std::env::var("KABIPAY_INSECURE_ALLOW_EMPTY_RBAC").as_deref() == Ok("1")
+        && claims.roles.is_empty()
+        && claims.permissions.is_empty()
+    {
+        return Ok(());
+    }
+    if claims.can_manage_employee_directory() || claims.can_manage_onboarding_tenant() {
+        return Ok(());
+    }
+    Err(KabiPayError::Forbidden(
+        "employee:write or onboarding:manage required".into(),
+    )
+    .into_graphql())
+}
+
 pub struct MutationRoot;
 
 #[Object]
@@ -250,13 +274,21 @@ impl MutationRoot {
         let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        if claims.can_manage_employee_directory() {
+        let hr_or_onboarding = claims.can_manage_employee_directory()
+            || claims.can_manage_onboarding_tenant();
+        if hr_or_onboarding {
             assert_employee_in_data_scope(ctx, &db, tenant_id, row.employee_id).await?;
-        } else if row.employee_id != viewer {
-            return Err(KabiPayError::Forbidden(
-                "you can only update your own onboarding tasks".into(),
-            )
-            .into_graphql());
+        } else if claims.can_use_onboarding_self_service() {
+            if row.employee_id != viewer {
+                return Err(KabiPayError::Forbidden(
+                    "you can only update your own onboarding tasks".into(),
+                )
+                .into_graphql());
+            }
+        } else {
+            return Err(
+                KabiPayError::Forbidden("onboarding permission required".into()).into_graphql(),
+            );
         }
         let m = onboarding_service::set_task_completed(&db, tenant_id, task_id, is_completed)
             .await
@@ -275,21 +307,23 @@ impl MutationRoot {
         let db = tenant_db(ctx, tenant_id).await?;
         let target_emp = if let Some(ref eid) = input.employee_id {
             let e = parse_uuid(eid, "employeeId")?;
-            if claims.can_manage_employee_directory() {
+            if claims.can_manage_employee_directory() || claims.can_manage_onboarding_tenant() {
                 e
             } else {
-                let self_id = claims.employee_id.ok_or_else(|| KabiPayError::Unauthorised.into_graphql())?;
-                if e != self_id {
-                    return Err(
-                        KabiPayError::Forbidden(
-                            "only HR can file separation for another employee".into(),
-                        )
-                        .into_graphql(),
-                    );
-                }
-                e
+                return Err(
+                    KabiPayError::Forbidden(
+                        "only HR can file separation for another employee".into(),
+                    )
+                    .into_graphql(),
+                );
             }
         } else {
+            if !claims.can_use_onboarding_self_service() {
+                return Err(
+                    KabiPayError::Forbidden("onboarding:self permission required".into())
+                        .into_graphql(),
+                );
+            }
             resolve_client_employee_id(ctx, &db, tenant_id)
                 .await
                 .map_err(KabiPayError::into_graphql)?
@@ -320,7 +354,7 @@ impl MutationRoot {
 
     /// Approve a pending separation (HR / directory roles — same gate as `createEmployee`).
     async fn approve_separation(&self, ctx: &Context<'_>, separation_id: ID) -> Result<SeparationDto> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let claims = require_client_claims(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
@@ -333,7 +367,7 @@ impl MutationRoot {
 
     /// Reject a pending separation (HR / directory roles).
     async fn reject_separation(&self, ctx: &Context<'_>, separation_id: ID) -> Result<SeparationDto> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let claims = require_client_claims(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
@@ -350,7 +384,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         input: UpsertFnfSettlementInput,
     ) -> Result<FnfSettlementDto> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let sid = parse_uuid(&input.separation_id, "separationId")?;
@@ -374,7 +408,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         separation_id: ID,
     ) -> Result<FnfSettlementDto> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let claims = require_client_claims(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
@@ -391,7 +425,7 @@ impl MutationRoot {
         ctx: &Context<'_>,
         separation_id: ID,
     ) -> Result<bool> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let sid = parse_uuid(&separation_id, "separationId")?;
@@ -408,7 +442,7 @@ impl MutationRoot {
         clearance_id: ID,
         is_cleared: bool,
     ) -> Result<ClearanceChecklistItemDto> {
-        require_employee_mutation_rbac(ctx)?;
+        require_offboarding_hr_mutation(ctx)?;
         let claims = require_client_claims(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;

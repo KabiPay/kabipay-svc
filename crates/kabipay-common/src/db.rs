@@ -6,14 +6,23 @@
 //!
 //! Connections are pooled and cached in [`TenantDbCache`]. Do not create a
 //! fresh pool per request — it will exhaust the PostgreSQL connection limit.
+//!
+//! Tenant pools set `search_path` on **every checkout**: `after_connect` for new
+//! physical connections plus `before_acquire` when handing out an idle connection.
+//! Transaction-mode poolers (Neon pooler, PgBouncer) can discard session state between
+//! uses; relying solely on SeaORM's `after_connect` hook causes `relation "user" does not exist`
+//! because `public` has no tenant-plane tables.
 
 use crate::error::{KabiPayError, KabiPayResult};
 use dashmap::DashMap;
 use kabipay_db_entities::ops::tenant_database;
 use sea_orm::{
     ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, QueryFilter,
+    SqlxPostgresConnector,
 };
+use sqlx::postgres::PgPoolOptions;
 use sqlx::Connection;
+use sqlx::ConnectOptions as SqlxConnectOptionsTrait;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -140,6 +149,62 @@ pub fn apply_postgres_ssl_mode_to_url(url: &str) -> String {
     }
 }
 
+fn tenant_search_path_sql(schema_name: &str) -> String {
+    let safe = schema_name.replace('"', "\"\"");
+    format!(r#"SET search_path = "{safe}","kabipay_ops","public""#)
+}
+
+async fn connect_tenant_pool(url: &str, schema_name: &str) -> KabiPayResult<DatabaseConnection> {
+    if schema_name.is_empty() {
+        return Err(KabiPayError::Internal(
+            "tenant schema_name is empty (cannot set search_path)".into(),
+        ));
+    }
+
+    let sql_arc = Arc::new(tenant_search_path_sql(schema_name));
+
+    let pg_opts = url
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .map_err(|e| KabiPayError::Internal(format!("invalid tenant DB URL: {e}")))?
+        .disable_statement_logging();
+
+    let pool = PgPoolOptions::new()
+        .max_connections(tenant_pool_max_connections())
+        .min_connections(0)
+        .acquire_timeout(pool_acquire_timeout())
+        .idle_timeout(Some(pool_idle_timeout()))
+        .test_before_acquire(true)
+        .after_connect({
+            let sql_arc = Arc::clone(&sql_arc);
+            move |conn, _meta| {
+                let sql = Arc::clone(&sql_arc);
+                Box::pin(async move {
+                    sqlx::Executor::execute(conn, sql.as_str()).await?;
+                    Ok(())
+                })
+            }
+        })
+        .before_acquire({
+            let sql_arc = Arc::clone(&sql_arc);
+            move |conn, _meta| {
+                let sql = Arc::clone(&sql_arc);
+                Box::pin(async move {
+                    sqlx::Executor::execute(conn, sql.as_str()).await?;
+                    Ok(true)
+                })
+            }
+        })
+        .connect_with(pg_opts)
+        .await
+        .map_err(|e| {
+            KabiPayError::Internal(format!(
+                "failed to open tenant sqlx pool ({schema_name}): {e}"
+            ))
+        })?;
+
+    Ok(SqlxPostgresConnector::from_sqlx_postgres_pool(pool))
+}
+
 /// Resolve (or create) a pooled SeaORM connection for a tenant.
 ///
 /// Strategy:
@@ -211,16 +276,7 @@ pub async fn resolve_tenant_handle(
     };
 
     let url = fallback_cfg.url_for(&effective_host, &db_name);
-    let mut opts = ConnectOptions::new(url);
-    opts.max_connections(tenant_pool_max_connections())
-        .min_connections(0)
-        .connect_timeout(pool_connect_timeout())
-        .acquire_timeout(pool_acquire_timeout())
-        .idle_timeout(pool_idle_timeout())
-        .sqlx_logging(false)
-        .set_schema_search_path(format!("{},kabipay_ops,public", schema_name));
-
-    let conn = Database::connect(opts).await.map_err(|e| {
+    let conn = connect_tenant_pool(&url, &schema_name).await.map_err(|e| {
         KabiPayError::Internal(format!(
             "failed to open tenant pool ({schema_name}@{effective_host}/{db_name}): {e}"
         ))

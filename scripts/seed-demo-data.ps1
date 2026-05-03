@@ -11,6 +11,9 @@
 
     Seeded coverage:
 
+      If GraphQL returns **relation "attendance" does not exist**, tenant Liquibase is behind:
+      run `kabipay-svc/scripts/update-tenant-liquibase.ps1 -Schema <tenant_schema>` **before** (or after) seeding.
+
       Tenant plane ("$Schema"):
         0000 foundation   : department, designation, user, employee (original demo)
         0010 shift/attend : shift (DAY/NIGHT), attendance for today
@@ -159,9 +162,11 @@ $ManagerEmployeeId   = New-DeterministicUuid -Seed "${Schema}:employee:line-mana
 $TenantAdminUserId   = New-DeterministicUuid -Seed "${Schema}:user:tenant-admin"
 $StaffUserId         = New-DeterministicUuid -Seed "${Schema}:user:staff"
 $StaffEmployeeId     = New-DeterministicUuid -Seed "${Schema}:employee:staff"
+$TenantAdminEmployeeId = New-DeterministicUuid -Seed "${Schema}:employee:tenant-admin"
 $RoleHrAdminId       = New-DeterministicUuid -Seed "${Schema}:role:HR_ADMIN"
 $RoleTenantAdminId   = New-DeterministicUuid -Seed "${Schema}:role:TENANT_ADMIN"
 $RoleLineManagerId   = New-DeterministicUuid -Seed "${Schema}:role:LINE_MANAGER"
+$RoleDemoStaffId     = New-DeterministicUuid -Seed "${Schema}:role:DEMO_STAFF"
 $PermEmployeeWriteId = New-DeterministicUuid -Seed "${Schema}:perm:employee:write"
 $PermLeaveApproveId  = New-DeterministicUuid -Seed "${Schema}:perm:leave:approve"
 $PermLeaveManageId   = New-DeterministicUuid -Seed "${Schema}:perm:leave:manage"
@@ -171,6 +176,20 @@ $PermPayrollStatutoryId = New-DeterministicUuid -Seed "${Schema}:perm:payroll:st
 $PermAttendancePunchPolicyId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:punch_policy"
 $PermWorkflowManageId = New-DeterministicUuid -Seed "${Schema}:perm:workflow:manage"
 $PermRoleManageId = New-DeterministicUuid -Seed "${Schema}:perm:role:manage"
+$PermBenefitsManageId = New-DeterministicUuid -Seed "${Schema}:perm:benefits:manage"
+$PermBenefitsSelfId = New-DeterministicUuid -Seed "${Schema}:perm:benefits:self"
+$PermRecruitmentManageId = New-DeterministicUuid -Seed "${Schema}:perm:recruitment:manage"
+$PermOnboardingManageId = New-DeterministicUuid -Seed "${Schema}:perm:onboarding:manage"
+$PermOnboardingSelfId = New-DeterministicUuid -Seed "${Schema}:perm:onboarding:self"
+$PermPerformanceManageId = New-DeterministicUuid -Seed "${Schema}:perm:performance:manage"
+$PermLearningManageId = New-DeterministicUuid -Seed "${Schema}:perm:learning:manage"
+$PermAssetsManageId = New-DeterministicUuid -Seed "${Schema}:perm:assets:manage"
+$PermGrievanceManageId = New-DeterministicUuid -Seed "${Schema}:perm:grievance:manage"
+$PermGrievanceSelfId = New-DeterministicUuid -Seed "${Schema}:perm:grievance:self"
+$PermSuccessionManageId = New-DeterministicUuid -Seed "${Schema}:perm:succession:manage"
+$PermCompensationManageId = New-DeterministicUuid -Seed "${Schema}:perm:compensation:manage"
+$PermAnalyticsReadId = New-DeterministicUuid -Seed "${Schema}:perm:analytics:read"
+$PermAttendancePunchSelfId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:punch_self"
 $ScopeScopeEmployeeAllId  = New-DeterministicUuid -Seed "${Schema}:permission_scope:employee:write:ALL"
 $ScopeScopeLeaveAllId   = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:ALL"
 $ScopeScopeLeaveTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:TEAM:LM"
@@ -202,6 +221,9 @@ $LbDemoSlId          = New-DeterministicUuid -Seed "${Schema}:leave_balance:demo
 $LbDemoPtoId         = New-DeterministicUuid -Seed "${Schema}:leave_balance:demo:pto"
 $LbMgrClId           = New-DeterministicUuid -Seed "${Schema}:leave_balance:mgr:cl"
 $LbStaffClId         = New-DeterministicUuid -Seed "${Schema}:leave_balance:staff:cl"
+$LbTenantAdminClId   = New-DeterministicUuid -Seed "${Schema}:leave_balance:tenant_admin:cl"
+$LbTenantAdminSlId   = New-DeterministicUuid -Seed "${Schema}:leave_balance:tenant_admin:sl"
+$LbTenantAdminPtoId  = New-DeterministicUuid -Seed "${Schema}:leave_balance:tenant_admin:pto"
 
 # Payroll (0012)
 $SalaryCompBasicId   = New-DeterministicUuid -Seed "${Schema}:salary_component:basic"
@@ -399,12 +421,26 @@ VALUES ('$RoleLineManagerId', '$TenantId', 'LINE_MANAGER', 'People manager — h
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
+VALUES ('$RoleDemoStaffId', '$TenantId', 'DEMO_STAFF', 'Demo IC — self-service benefits, onboarding, grievance only', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".role (id, tenant_id, name, description, is_system_role, is_deleted)
 VALUES ('$RoleTenantAdminId', '$TenantId', 'TENANT_ADMIN', 'Tenant administrator — admin shell + HR configuration', true, false)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
 VALUES ('$TenantAdminUserId', '$TenantId', 'tenant-admin@kabipay.local', '$PasswordHash', true, false)
 ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true;
+
+INSERT INTO "$Schema".employee (
+    id, tenant_id, user_id, department_id, designation_id,
+    employee_code, first_name, last_name, employment_type, status,
+    date_of_joining, reporting_manager_id
+) VALUES (
+    '$TenantAdminEmployeeId', '$TenantId', '$TenantAdminUserId', '$DepartmentId', '$DesignationId',
+    'EMP0998', 'Tenant', 'Administrator', 'PERMANENT', 'ACTIVE',
+    CURRENT_DATE, '$ManagerEmployeeId'
+) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO "$Schema"."user" (id, tenant_id, email, password_hash, is_active, mfa_enabled)
 VALUES ('$StaffUserId', '$TenantId', 'staff@kabipay.local', '$PasswordHash', true, false)
@@ -456,6 +492,62 @@ INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermRoleManageId', 'role', 'manage', '$ModuleEmployeeId', 'Assign tenant roles, permissions, and data scopes')
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermBenefitsManageId', 'benefits', 'manage', '$ModuleEmployeeId', 'Configure benefit types/plans (HR)')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermBenefitsSelfId', 'benefits', 'self', '$ModuleEmployeeId', 'View offerings and enroll in benefits')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermRecruitmentManageId', 'recruitment', 'manage', '$ModuleRecruitId', 'Manage job postings and applications')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermOnboardingManageId', 'onboarding', 'manage', '$ModuleEmployeeId', 'Tenant-wide onboarding and offboarding console')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermOnboardingSelfId', 'onboarding', 'self', '$ModuleEmployeeId', 'Own onboarding checklist and separation filing')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermPerformanceManageId', 'performance', 'manage', '$ModuleEmployeeId', 'Performance cycles and goals administration')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermLearningManageId', 'learning', 'manage', '$ModuleEmployeeId', 'LMS skills and courses administration')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermAssetsManageId', 'assets', 'manage', '$ModuleEmployeeId', 'Asset categories and assignments')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermGrievanceManageId', 'grievance', 'manage', '$ModuleEmployeeId', 'Tenant-wide grievance cases')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermGrievanceSelfId', 'grievance', 'self', '$ModuleEmployeeId', 'File grievances and view own cases')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermSuccessionManageId', 'succession', 'manage', '$ModuleEmployeeId', 'Succession competencies and talent pools')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermCompensationManageId', 'compensation', 'manage', '$ModulePayrollId', 'Salary bands and compensation review cycles')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermAnalyticsReadId', 'analytics', 'read', '$ModuleEmployeeId', 'Insights dashboards, workforce snapshots, report catalog')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermAttendancePunchSelfId', 'attendance', 'punch_self', '$ModuleAttendanceId', 'Live punch in/out and own punch-day summary')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermEmployeeWriteId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
@@ -493,12 +585,96 @@ VALUES ('$RoleHrAdminId', '$PermLeaveManageId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermBenefitsManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermRecruitmentManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermOnboardingManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermPerformanceManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermLearningManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermAssetsManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermGrievanceManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermSuccessionManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermCompensationManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermAnalyticsReadId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermAttendancePunchSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleLineManagerId', '$PermLeaveApproveId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleLineManagerId', '$PermExpenseApproveId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermBenefitsSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermOnboardingSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermGrievanceSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermAnalyticsReadId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermAttendancePunchSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleDemoStaffId', '$PermBenefitsSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleDemoStaffId', '$PermOnboardingSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleDemoStaffId', '$PermGrievanceSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleDemoStaffId', '$PermAttendancePunchSelfId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$StaffUserId', '$RoleDemoStaffId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
 
 INSERT INTO "$Schema".user_role (user_id, role_id)
 VALUES ('$UserId', '$RoleHrAdminId')
@@ -629,7 +805,13 @@ INSERT INTO "$Schema".leave_balance (
     ('$LbMgrClId', '$TenantId', '$ManagerEmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
         12, 0, 0, 0, 12, NOW(), NOW()),
     ('$LbStaffClId', '$TenantId', '$StaffEmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
-        12, 0, 0, 0, 12, NOW(), NOW())
+        12, 0, 0, 0, 12, NOW(), NOW()),
+    ('$LbTenantAdminClId', '$TenantId', '$TenantAdminEmployeeId', '$LeaveTypeClId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        12, 0, 0, 0, 12, NOW(), NOW()),
+    ('$LbTenantAdminSlId', '$TenantId', '$TenantAdminEmployeeId', '$LeaveTypeSlId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        10, 0, 0, 0, 10, NOW(), NOW()),
+    ('$LbTenantAdminPtoId', '$TenantId', '$TenantAdminEmployeeId', '$LeaveTypePtoId', EXTRACT(YEAR FROM CURRENT_DATE)::int,
+        15, 0, 0, 0, 15, NOW(), NOW())
 ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING;
 
 INSERT INTO "$Schema".leave_request (
@@ -1232,8 +1414,8 @@ Write-Host ""
 Write-Host "Demo tenant logins (password ChangeMe!123):" -ForegroundColor Yellow
 Write-Host '  demo@kabipay.local          - HR_ADMIN + employee (full HR + self-service)'
 Write-Host '  tenant-admin@kabipay.local  - TENANT_ADMIN (admin shell + leave configuration)'
-Write-Host '  manager@kabipay.local       - LINE_MANAGER (team-scoped approvals)'
-Write-Host '  staff@kabipay.local         - employee only (no elevated roles)'
+Write-Host '  manager@kabipay.local       - LINE_MANAGER (approvals + analytics:read + attendance:punch_self)'
+Write-Host '  staff@kabipay.local         - DEMO_STAFF (benefits:self, onboarding:self, grievance:self, attendance:punch_self)'
 Write-Host ""
 Write-Host "Try the employee query once kabipay-employee is running:" -ForegroundColor Yellow
 Write-Host '  PowerShell:'

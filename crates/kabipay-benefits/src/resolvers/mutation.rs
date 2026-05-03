@@ -25,7 +25,13 @@ impl MutationRoot {
         ctx: &Context<'_>,
         benefit_plan_id: ID,
     ) -> Result<BenefitEnrollmentDto> {
-        let _claims = require_client_claims(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_read_benefit_catalog_queries() {
+            return Err(
+                KabiPayError::Forbidden("benefits:self or benefits:manage permission required".into())
+                    .into_graphql(),
+            );
+        }
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)

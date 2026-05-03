@@ -2,7 +2,7 @@
 
 use async_graphql::{Context, Object, Result};
 use kabipay_common::{
-    subgraph::{require_tenant_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, tenant_db},
     KabiPayError,
 };
 
@@ -23,6 +23,12 @@ impl QueryRoot {
         #[graphql(default = 20)] limit: u64,
     ) -> Result<Vec<ReviewCycleDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_performance_programs() {
+            return Err(
+                KabiPayError::Forbidden("performance:manage permission required".into()).into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = performance_service::list_cycles(&db, tenant_id, limit)
             .await
@@ -36,6 +42,12 @@ impl QueryRoot {
         #[graphql(default = 100)] limit: u64,
     ) -> Result<Vec<GoalDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_performance_programs() {
+            return Err(
+                KabiPayError::Forbidden("performance:manage permission required".into()).into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = performance_service::list_goals(&db, tenant_id, limit)
             .await

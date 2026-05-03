@@ -281,7 +281,8 @@ impl QueryRoot {
         Ok(rows.into_iter().map(OnboardingChecklistItemDto::from).collect())
     }
 
-    /// Separation / offboarding requests. HR directory roles see tenant-wide rows; others see their own.
+    /// Separation / offboarding requests. `onboarding:manage` sees tenant-wide rows;
+    /// `onboarding:self` (or manage) sees **their own**; otherwise forbidden.
     async fn separations(
         &self,
         ctx: &Context<'_>,
@@ -290,14 +291,19 @@ impl QueryRoot {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let claims = require_client_claims(ctx)?;
-        let filter = if claims.can_manage_employee_directory() {
+        let filter = if claims.can_manage_onboarding_tenant() {
             None
-        } else {
+        } else if claims.can_use_onboarding_self_service() {
             Some(
                 resolve_client_employee_id(ctx, &db, tenant_id)
                     .await
                     .map_err(KabiPayError::into_graphql)?,
             )
+        } else {
+            return Err(
+                KabiPayError::Forbidden("onboarding:self or onboarding:manage permission required".into())
+                    .into_graphql(),
+            );
         };
         let rows = separation_service::list_for_tenant(&db, tenant_id, limit, filter)
             .await
@@ -321,7 +327,9 @@ impl QueryRoot {
             return Ok(None);
         };
         let claims = require_client_claims(ctx)?;
-        if !claims.can_manage_employee_directory() {
+        let tenant_wide_fnf = claims.can_manage_onboarding_tenant()
+            || claims.can_manage_employee_directory();
+        if !tenant_wide_fnf {
             let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
                 .await
                 .map_err(KabiPayError::into_graphql)?;
@@ -354,7 +362,9 @@ impl QueryRoot {
             return Ok(vec![]);
         };
         let claims = require_client_claims(ctx)?;
-        if !claims.can_manage_employee_directory() {
+        let tenant_wide_clearance = claims.can_manage_onboarding_tenant()
+            || claims.can_manage_employee_directory();
+        if !tenant_wide_clearance {
             let viewer = resolve_client_employee_id(ctx, &db, tenant_id)
                 .await
                 .map_err(KabiPayError::into_graphql)?;

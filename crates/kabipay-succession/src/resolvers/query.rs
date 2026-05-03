@@ -2,7 +2,7 @@
 
 use async_graphql::{Context, Object, Result};
 use kabipay_common::{
-    subgraph::{require_tenant_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, tenant_db},
     KabiPayError,
 };
 
@@ -36,6 +36,12 @@ impl QueryRoot {
         #[graphql(default = 50)] limit: u64,
     ) -> Result<Vec<TalentPoolDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_succession_planning() {
+            return Err(
+                KabiPayError::Forbidden("succession:manage permission required".into()).into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = succession_service::list_pools(&db, tenant_id, limit)
             .await

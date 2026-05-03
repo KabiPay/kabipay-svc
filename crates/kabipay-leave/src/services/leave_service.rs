@@ -22,6 +22,8 @@ use sea_orm::{
 use std::collections::HashSet;
 use uuid::Uuid;
 
+use crate::services::leave_admin;
+
 pub async fn list_types(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -208,6 +210,9 @@ pub async fn submit_leave_request(
     }
 
     let year = from_date.year();
+    leave_admin::ensure_leave_balance_for_submit(&txn, tenant_id, employee_id, leave_type_id, year)
+        .await?;
+
     let bal = leave_balance::Entity::find()
         .filter(leave_balance::Column::TenantId.eq(tenant_id))
         .filter(leave_balance::Column::EmployeeId.eq(employee_id))
@@ -217,7 +222,7 @@ pub async fn submit_leave_request(
         .await?
         .ok_or_else(|| {
             KabiPayError::Validation(
-                "no leave balance for this leave type and year — ask HR to provision balances"
+                "no leave balance for this leave type and year — configure a leave policy with entitlement or ask HR to provision balances"
                     .into(),
             )
         })?;

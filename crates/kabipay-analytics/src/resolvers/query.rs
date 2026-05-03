@@ -27,6 +27,16 @@ fn parse_opt_uuid(id: &Option<ID>, field: &'static str) -> Result<Option<Uuid>> 
     }
 }
 
+fn require_analytics_insights(ctx: &Context<'_>) -> Result<()> {
+    let claims = require_client_claims(ctx)?;
+    if !claims.can_access_analytics_insights() {
+        return Err(
+            KabiPayError::Forbidden("analytics:read permission required".into()).into_graphql(),
+        );
+    }
+    Ok(())
+}
+
 #[Object]
 impl QueryRoot {
     async fn analytics_health(&self) -> &'static str {
@@ -38,6 +48,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 100)] limit: u64,
     ) -> Result<Vec<ReportDefinitionDto>> {
+        require_analytics_insights(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = analytics_service::list_report_definitions(&db, tenant_id, limit)
@@ -51,6 +62,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 100)] limit: u64,
     ) -> Result<Vec<ReportScheduleDto>> {
+        require_analytics_insights(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = analytics_service::list_report_schedules(&db, tenant_id, limit)
@@ -64,6 +76,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: u64,
     ) -> Result<Vec<DashboardRowDto>> {
+        require_analytics_insights(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = analytics_service::list_dashboards(&db, tenant_id, limit)
@@ -78,6 +91,7 @@ impl QueryRoot {
         dashboard_id: Option<ID>,
         #[graphql(default = 100)] limit: u64,
     ) -> Result<Vec<DashboardWidgetRowDto>> {
+        require_analytics_insights(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let did = parse_opt_uuid(&dashboard_id, "dashboardId")?;
@@ -92,6 +106,7 @@ impl QueryRoot {
         ctx: &Context<'_>,
         #[graphql(default = 24)] limit: u64,
     ) -> Result<Vec<WorkforceSnapshotDto>> {
+        require_analytics_insights(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = analytics_service::list_workforce_snapshots(&db, tenant_id, limit)

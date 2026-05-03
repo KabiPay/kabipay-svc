@@ -190,6 +190,34 @@ pub const PERM_WORKFLOW_MANAGE: &str = "workflow:manage";
 pub const PERM_LEAVE_MANAGE: &str = "leave:manage";
 /// Assign tenant **roles** / **permissions** / **scopes** to users (RBAC administration).
 pub const PERM_ROLE_MANAGE: &str = "role:manage";
+/// Workplace: configure benefit types/plans and tenant-wide enrollment views.
+pub const PERM_BENEFITS_MANAGE: &str = "benefits:manage";
+/// Self-service: view active offerings and enroll in benefit plans.
+pub const PERM_BENEFITS_SELF: &str = "benefits:self";
+/// Workplace: job postings and candidate applications (talent acquisition console).
+pub const PERM_RECRUITMENT_MANAGE: &str = "recruitment:manage";
+/// Workplace: onboarding/offboarding HR console (tenant-wide separations, approvals depth).
+pub const PERM_ONBOARDING_MANAGE: &str = "onboarding:manage";
+/// Workplace: employee self-service for join tasks and filing own separation (route + list scope).
+pub const PERM_ONBOARDING_SELF: &str = "onboarding:self";
+/// Workplace: performance cycles and goals administration.
+pub const PERM_PERFORMANCE_MANAGE: &str = "performance:manage";
+/// Workplace: LMS skills and courses administration.
+pub const PERM_LEARNING_MANAGE: &str = "learning:manage";
+/// Workplace: asset categories and assignments registry.
+pub const PERM_ASSETS_MANAGE: &str = "assets:manage";
+/// Workplace: view/manage tenant-wide grievance cases (beyond own submissions).
+pub const PERM_GRIEVANCE_MANAGE: &str = "grievance:manage";
+/// Self-service: file grievances and view own cases/categories.
+pub const PERM_GRIEVANCE_SELF: &str = "grievance:self";
+/// Workplace: succession competencies and talent pools.
+pub const PERM_SUCCESSION_MANAGE: &str = "succession:manage";
+/// Workplace: salary bands and compensation review cycles (distinct from payslip payroll).
+pub const PERM_COMPENSATION_MANAGE: &str = "compensation:manage";
+/// View Insights / workforce analytics (`report_definitions`, dashboards, snapshots).
+pub const PERM_ANALYTICS_READ: &str = "analytics:read";
+/// Record live punches and read **own** punch-day summary (`punch_today`, `punchDaySummary`).
+pub const PERM_ATTENDANCE_PUNCH_SELF: &str = "attendance:punch_self";
 
 /// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
 /// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
@@ -298,6 +326,156 @@ impl ClientClaims {
     /// Manage tenant RBAC: roles, permission grants, and list scopes (`role:manage` or elevated HR / tenant admin).
     pub fn can_manage_tenant_rbac(&self) -> bool {
         if self.has_any_permission(&[PERM_ROLE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_benefits_catalog(&self) -> bool {
+        if self.has_any_permission(&[PERM_BENEFITS_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Benefit types/plans list queries for the workplace Benefits UI (HR + enrollment pickers).
+    pub fn can_read_benefit_catalog_queries(&self) -> bool {
+        if self.has_any_permission(&[PERM_BENEFITS_MANAGE, PERM_BENEFITS_SELF]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_recruitment(&self) -> bool {
+        if self.has_any_permission(&[PERM_RECRUITMENT_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_performance_programs(&self) -> bool {
+        if self.has_any_permission(&[PERM_PERFORMANCE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_learning_catalog(&self) -> bool {
+        if self.has_any_permission(&[PERM_LEARNING_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_assets_registry(&self) -> bool {
+        if self.has_any_permission(&[PERM_ASSETS_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_succession_planning(&self) -> bool {
+        if self.has_any_permission(&[PERM_SUCCESSION_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_compensation_admin(&self) -> bool {
+        if self.has_any_permission(&[PERM_COMPENSATION_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    pub fn can_manage_grievance_tenant_cases(&self) -> bool {
+        if self.has_any_permission(&[PERM_GRIEVANCE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Submit grievances and view **own** cases (`grievance:self`, or manage, or legacy HR roles).
+    pub fn can_use_grievance_self_service(&self) -> bool {
+        if self.has_any_permission(&[PERM_GRIEVANCE_SELF, PERM_GRIEVANCE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Tenant-wide onboarding/offboarding lists and HR depth (`onboarding:manage`).
+    pub fn can_manage_onboarding_tenant(&self) -> bool {
+        if self.has_any_permission(&[PERM_ONBOARDING_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Join checklist + own separation flows (`onboarding:self`, or `onboarding:manage`, or legacy HR roles).
+    pub fn can_use_onboarding_self_service(&self) -> bool {
+        if self.has_any_permission(&[PERM_ONBOARDING_SELF, PERM_ONBOARDING_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Workforce insights UI (`analytics:read`) — dashboards, report catalog, snapshots.
+    pub fn can_access_analytics_insights(&self) -> bool {
+        if self.has_any_permission(&[PERM_ANALYTICS_READ]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Own-device punches (`attendance:punch_self`) or directory admins who act as employees.
+    pub fn can_record_own_attendance_punches(&self) -> bool {
+        if self.has_any_permission(&[
+            PERM_ATTENDANCE_PUNCH_SELF,
+            PERM_EMPLOYEE_WRITE,
+            PERM_EMPLOYEE_MANAGE,
+        ]) {
             return true;
         }
         self.roles.iter().any(|r| {

@@ -2,7 +2,7 @@
 
 use async_graphql::{Context, Object, Result};
 use kabipay_common::{
-    subgraph::{require_tenant_id, tenant_db},
+    subgraph::{require_client_claims, require_tenant_id, tenant_db},
     KabiPayError,
 };
 
@@ -23,6 +23,12 @@ impl QueryRoot {
         #[graphql(default = 100)] limit: u64,
     ) -> Result<Vec<SalaryBandDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_compensation_admin() {
+            return Err(
+                KabiPayError::Forbidden("compensation:manage permission required".into()).into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = compensation_service::list_bands(&db, tenant_id, limit)
             .await
@@ -36,6 +42,12 @@ impl QueryRoot {
         #[graphql(default = 20)] limit: u64,
     ) -> Result<Vec<CompensationReviewCycleDto>> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_compensation_admin() {
+            return Err(
+                KabiPayError::Forbidden("compensation:manage permission required".into()).into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let rows = compensation_service::list_cycles(&db, tenant_id, limit)
             .await
