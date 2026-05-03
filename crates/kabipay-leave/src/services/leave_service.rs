@@ -388,12 +388,18 @@ async fn finalize_leave_approval(
     request_id: Uuid,
 ) -> KabiPayResult<()> {
     let days = model.days_requested;
-    let new_pending = bal.pending_days - days;
-    if new_pending < Decimal::ZERO {
-        return Err(KabiPayError::Validation(
-            "leave balance pending mismatch — cannot approve".into(),
-        ));
+    let consume_pending = bal.pending_days.min(days);
+    if consume_pending != days {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            employee_id = %model.employee_id,
+            leave_request_id = %request_id,
+            pending_days = %bal.pending_days,
+            days_requested = %days,
+            "leave balance pending_days below days_requested on approve; applying partial pending consumption"
+        );
     }
+    let new_pending = bal.pending_days - consume_pending;
     let new_used = bal.used_days + days;
 
     let mut am_req: leave_request::ActiveModel = model.clone().into();
@@ -678,12 +684,18 @@ pub async fn reject_leave_request(
             id: format!("{}-{}", model.employee_id, year),
         })?;
 
-    let new_pending = bal.pending_days - days;
-    if new_pending < Decimal::ZERO {
-        return Err(KabiPayError::Validation(
-            "leave balance pending mismatch — cannot reject".into(),
-        ));
+    let release_pending = bal.pending_days.min(days);
+    if release_pending != days {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            employee_id = %model.employee_id,
+            leave_request_id = %request_id,
+            pending_days = %bal.pending_days,
+            days_requested = %days,
+            "leave balance pending_days below days_requested on reject; restoring balance_days fully"
+        );
     }
+    let new_pending = bal.pending_days - release_pending;
     let new_balance = bal.balance_days + days;
 
     let now = Utc::now();
@@ -762,12 +774,18 @@ pub async fn cancel_leave_request(
             id: format!("{}-{}", model.employee_id, year),
         })?;
 
-    let new_pending = bal.pending_days - days;
-    if new_pending < Decimal::ZERO {
-        return Err(KabiPayError::Validation(
-            "leave balance pending mismatch — cannot cancel".into(),
-        ));
+    let release_pending = bal.pending_days.min(days);
+    if release_pending != days {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            employee_id = %model.employee_id,
+            leave_request_id = %request_id,
+            pending_days = %bal.pending_days,
+            days_requested = %days,
+            "leave balance pending_days below days_requested on cancel; restoring balance_days fully"
+        );
     }
+    let new_pending = bal.pending_days - release_pending;
     let new_balance = bal.balance_days + days;
 
     let mut am_req: leave_request::ActiveModel = model.clone().into();

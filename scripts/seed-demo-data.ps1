@@ -1168,8 +1168,8 @@ INSERT INTO "$Schema".workflow_step (
     id, tenant_id, workflow_id, sequence_order, step_name,
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
-    '$WorkflowStep1Id', '$TenantId', '$WorkflowId', 1, 'Manager approval',
-    'REPORTING_MANAGER', NULL, false, NULL
+    '$WorkflowStep1Id', '$TenantId', '$WorkflowId', 1, 'Manager or HR approval',
+    'REPORTING_MANAGER_OR_ROLE', '$RoleHrAdminId', false, NULL
 ) ON CONFLICT (id) DO UPDATE SET
     sequence_order = EXCLUDED.sequence_order,
     step_name = EXCLUDED.step_name,
@@ -1179,20 +1179,14 @@ INSERT INTO "$Schema".workflow_step (
     sla_hours = EXCLUDED.sla_hours,
     updated_at = NOW();
 
-INSERT INTO "$Schema".workflow_step (
-    id, tenant_id, workflow_id, sequence_order, step_name,
-    approver_type, approver_role_id, can_skip, sla_hours
-) VALUES (
-    '$WorkflowStep2Id', '$TenantId', '$WorkflowId', 2, 'HR approval',
-    'ROLE', '$RoleHrAdminId', false, NULL
-) ON CONFLICT (id) DO UPDATE SET
-    sequence_order = EXCLUDED.sequence_order,
-    step_name = EXCLUDED.step_name,
-    approver_type = EXCLUDED.approver_type,
-    approver_role_id = EXCLUDED.approver_role_id,
-    can_skip = EXCLUDED.can_skip,
-    sla_hours = EXCLUDED.sla_hours,
-    updated_at = NOW();
+DELETE FROM "$Schema".workflow_step WHERE id = '$WorkflowStep2Id';
+
+UPDATE "$Schema".workflow_instance
+SET current_step_id = '$WorkflowStep1Id', updated_at = NOW()
+WHERE workflow_id = '$WorkflowId'
+  AND entity_type = 'LEAVE_REQUEST'
+  AND status = 'IN_PROGRESS'
+  AND current_step_id = '$WorkflowStep2Id';
 
 INSERT INTO "$Schema".workflow_instance (
     id, tenant_id, workflow_id, entity_type, entity_id, status, current_step_id

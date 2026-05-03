@@ -3,6 +3,8 @@
 //! `workflow_step.approver_type`:
 //! - `REPORTING_MANAGER` / `MANAGER` / `LINE_MANAGER` — only the subject employee's reporting manager (`employee.user_id`).
 //! - `ROLE` — requires `approver_role_id`; user must have that role in `user_role` for the tenant.
+//! - `REPORTING_MANAGER_OR_ROLE` — **either** the reporting manager **or** a user with `approver_role_id`
+//!   (e.g. HR) may approve in one step (substitute / hierarchy cover when manager is unavailable).
 
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 
@@ -139,6 +141,34 @@ async fn assert_user_has_role(
     Ok(())
 }
 
+/// Reporting manager **or** a user assigned `fallback_role_id` (e.g. HR admin) may act — single-step hierarchy cover.
+async fn assert_reporting_manager_or_fallback_role(
+    conn: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    approver_user_id: Uuid,
+    subject_employee_id: Uuid,
+    fallback_role_id: Uuid,
+) -> KabiPayResult<()> {
+    if assert_is_reporting_manager_user(
+        conn,
+        tenant_id,
+        approver_user_id,
+        subject_employee_id,
+    )
+    .await
+    .is_ok()
+    {
+        return Ok(());
+    }
+    match assert_user_has_role(conn, tenant_id, approver_user_id, fallback_role_id).await {
+        Ok(()) => Ok(()),
+        Err(_) => Err(KabiPayError::Forbidden(
+            "only the employee's reporting manager or a user with the workflow HR fallback role may approve or reject at this step"
+                .into(),
+        )),
+    }
+}
+
 /// Ensures `approver_user_id` may act on `step` for requests from `subject_employee_id`.
 pub async fn assert_workflow_step_actor(
     conn: &impl ConnectionTrait,
@@ -165,6 +195,22 @@ pub async fn assert_workflow_step_actor(
                 )
             })?;
             assert_user_has_role(conn, tenant_id, approver_user_id, role_id).await
+        }
+        "REPORTING_MANAGER_OR_ROLE" | "MANAGER_OR_ROLE" => {
+            let role_id = step.approver_role_id.ok_or_else(|| {
+                KabiPayError::Validation(
+                    "workflow step uses REPORTING_MANAGER_OR_ROLE but approver_role_id is missing (set HR / fallback role)"
+                        .into(),
+                )
+            })?;
+            assert_reporting_manager_or_fallback_role(
+                conn,
+                tenant_id,
+                approver_user_id,
+                subject_employee_id,
+                role_id,
+            )
+            .await
         }
         other => Err(KabiPayError::Validation(format!(
             "unsupported workflow_step.approver_type: {other}"
