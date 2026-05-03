@@ -3,7 +3,7 @@
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{
-    attendance, holiday, holiday_calendar, shift, timesheet_entry,
+    attendance, holiday, holiday_calendar, shift, timesheet_entry, timesheet_week_batch,
 };
 use kabipay_db_entities::tenant::d0032_attendance_punch_policy::attendance_punch_policy;
 use rust_decimal::prelude::ToPrimitive;
@@ -105,6 +105,34 @@ pub struct HolidayEntryDto {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TimesheetWeekBatch")]
+pub struct TimesheetWeekBatchDto {
+    pub id: ID,
+    pub tenant_id: ID,
+    pub employee_id: ID,
+    pub week_start_date: NaiveDate,
+    pub status: String,
+    pub workflow_instance_id: Option<ID>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub rejection_reason: Option<String>,
+}
+
+impl From<timesheet_week_batch::Model> for TimesheetWeekBatchDto {
+    fn from(m: timesheet_week_batch::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            tenant_id: ID(m.tenant_id.to_string()),
+            employee_id: ID(m.employee_id.to_string()),
+            week_start_date: m.week_start_date,
+            status: m.status,
+            workflow_instance_id: m.workflow_instance_id.map(|u| ID(u.to_string())),
+            submitted_at: m.submitted_at,
+            rejection_reason: m.rejection_reason,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "TimesheetEntry")]
 pub struct TimesheetEntryDto {
     pub id: ID,
@@ -115,6 +143,7 @@ pub struct TimesheetEntryDto {
     pub project_code: Option<String>,
     pub description: Option<String>,
     pub status: String,
+    pub batch_id: Option<ID>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -130,6 +159,7 @@ impl From<timesheet_entry::Model> for TimesheetEntryDto {
             project_code: m.project_code,
             description: m.description,
             status: m.status,
+            batch_id: m.batch_id.map(|u| ID(u.to_string())),
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -197,6 +227,46 @@ pub struct CreateTimesheetEntryInput {
     pub hours_worked: String,
     pub project_code: Option<String>,
     pub description: Option<String>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpdateTimesheetEntryInput {
+    pub id: ID,
+    pub work_date: NaiveDate,
+    pub hours_worked: String,
+    pub project_code: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "AttendanceAdjustmentPolicy")]
+pub struct AttendanceAdjustmentPolicyDto {
+    pub max_self_adjust_days: i64,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TimesheetLockPolicy")]
+pub struct TimesheetLockPolicyDto {
+    pub editable_week_span: i64,
+    pub lock_approved_entries: bool,
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "TimesheetProjectOption")]
+pub struct TimesheetProjectOptionDto {
+    pub code: String,
+    pub name: String,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertAttendanceAdjustmentPolicyInput {
+    pub max_self_adjust_days: i64,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertTimesheetLockPolicyInput {
+    pub editable_week_span: i64,
+    pub lock_approved_entries: bool,
 }
 
 impl HolidayEntryDto {

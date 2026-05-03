@@ -1,4 +1,4 @@
-//! Auto-generated from `kabipay-database/changelog/migrations/0010_time_shift_roster/time_shift_roster.xml`.
+//! Time / shift / roster domain (`0010`) plus `timesheet_week_batch` (`0041`).
 
 pub mod holiday_calendar {
     use crate::tenant::prelude::*;
@@ -270,6 +270,53 @@ pub mod attendance_regularization {
     pub enum Relation {}
 }
 
+pub mod timesheet_week_batch {
+    use crate::tenant::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "timesheet_week_batch")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: Uuid,
+        pub tenant_id: Uuid,
+        pub employee_id: Uuid,
+        pub week_start_date: NaiveDate,
+        pub status: String,
+        pub workflow_instance_id: Option<Uuid>,
+        pub submitted_at: Option<DateTimeUtc>,
+        pub rejection_reason: Option<String>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}
+
+pub mod timesheet_project_assignment {
+    use crate::tenant::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "timesheet_project_assignment")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: Uuid,
+        pub tenant_id: Uuid,
+        pub employee_id: Uuid,
+        pub project_code: String,
+        pub assigned_by_user_id: Option<Uuid>,
+        pub created_at: DateTimeUtc,
+        pub updated_at: DateTimeUtc,
+    }
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}
+
 pub mod timesheet_entry {
     use crate::tenant::prelude::*;
 
@@ -285,6 +332,7 @@ pub mod timesheet_entry {
         pub project_code: Option<String>,
         pub description: Option<String>,
         pub status: String,
+        pub batch_id: Option<Uuid>,
         pub is_deleted: bool,
         pub deleted_at: Option<DateTimeUtc>,
         pub deleted_by: Option<Uuid>,

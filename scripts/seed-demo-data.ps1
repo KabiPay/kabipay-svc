@@ -190,6 +190,9 @@ $PermSuccessionManageId = New-DeterministicUuid -Seed "${Schema}:perm:succession
 $PermCompensationManageId = New-DeterministicUuid -Seed "${Schema}:perm:compensation:manage"
 $PermAnalyticsReadId = New-DeterministicUuid -Seed "${Schema}:perm:analytics:read"
 $PermAttendancePunchSelfId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:punch_self"
+$PermAttendanceRegularizeId = New-DeterministicUuid -Seed "${Schema}:perm:attendance:regularize"
+$PermTimesheetApproveId = New-DeterministicUuid -Seed "${Schema}:perm:timesheet:approve"
+$PermTimesheetManageId = New-DeterministicUuid -Seed "${Schema}:perm:timesheet:manage"
 $ScopeScopeEmployeeAllId  = New-DeterministicUuid -Seed "${Schema}:permission_scope:employee:write:ALL"
 $ScopeScopeLeaveAllId   = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:ALL"
 $ScopeScopeLeaveTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:leave:approve:TEAM:LM"
@@ -198,6 +201,8 @@ $ScopeScopeExpenseTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_s
 $ScopeScopeAttendanceAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:read:ALL"
 $ScopeAttendancePunchPolicyAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:attendance:punch_policy:ALL"
 $ScopeWorkflowManageAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:workflow:manage:ALL"
+$ScopeTimesheetApproveAllId = New-DeterministicUuid -Seed "${Schema}:permission_scope:timesheet:approve:ALL"
+$ScopeTimesheetApproveTeamLmId = New-DeterministicUuid -Seed "${Schema}:permission_scope:timesheet:approve:TEAM:LM"
 
 # Shift / attendance (0010)
 $ShiftDayId          = New-DeterministicUuid -Seed "${Schema}:shift:day"
@@ -303,6 +308,14 @@ $ExpenseWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:ex
 $ExpenseWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:1"
 $ExpenseWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:expense:2"
 $ExpenseWorkflowInstanceId  = New-DeterministicUuid -Seed "${Schema}:workflow_instance:expense:1"
+$TimesheetWorkflowId          = New-DeterministicUuid -Seed "${Schema}:workflow:timesheet-approval"
+$TimesheetWorkflowStep1Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:timesheet:1"
+$TimesheetWorkflowStep2Id     = New-DeterministicUuid -Seed "${Schema}:workflow_step:timesheet:2"
+$MdHrmsAttAdjId = New-DeterministicUuid -Seed "${Schema}:master_data:hrms_att_adj"
+$MdHrmsTsLockId = New-DeterministicUuid -Seed "${Schema}:master_data:hrms_ts_lock"
+$MdProjInternalId = New-DeterministicUuid -Seed "${Schema}:master_data:proj_internal"
+$MdProjClientAId = New-DeterministicUuid -Seed "${Schema}:master_data:proj_client_a"
+$MdTaskInternalId = New-DeterministicUuid -Seed "${Schema}:master_data:task_internal"
 
 # Notification / Communication (0027)
 $AnnouncementId      = New-DeterministicUuid -Seed "${Schema}:announcement:1"
@@ -548,6 +561,18 @@ INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
 VALUES ('$PermAttendancePunchSelfId', 'attendance', 'punch_self', '$ModuleAttendanceId', 'Live punch in/out and own punch-day summary')
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermAttendanceRegularizeId', 'attendance', 'regularize', '$ModuleAttendanceId', 'Manual attendance corrections beyond employee self-service window')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermTimesheetApproveId', 'timesheet', 'approve', '$ModuleAttendanceId', 'Approve or reject weekly timesheet submissions')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".permission (id, resource, action, module_id, description)
+VALUES ('$PermTimesheetManageId', 'timesheet', 'manage', '$ModuleAttendanceId', 'Configure timesheet projects, tasks, and lock policy')
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
 VALUES ('$RoleHrAdminId', '$PermEmployeeWriteId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
@@ -625,7 +650,23 @@ VALUES ('$RoleHrAdminId', '$PermAnalyticsReadId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
-VALUES ('$RoleHrAdminId', '$PermAttendancePunchSelfId')
+VALUES ('$RoleHrAdminId', '$PermTimesheetApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermTimesheetManageId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleHrAdminId', '$PermAttendanceRegularizeId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermTimesheetApproveId')
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO "$Schema".role_permission (role_id, permission_id)
+VALUES ('$RoleLineManagerId', '$PermAttendanceRegularizeId')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO "$Schema".role_permission (role_id, permission_id)
@@ -694,6 +735,11 @@ INSERT INTO "$Schema".user_role (user_id, role_id)
 VALUES ('$TenantAdminUserId', '$RoleTenantAdminId')
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
+-- Workflow steps use `assert_user_has_role(HR_ADMIN)`; assign HR_ADMIN explicitly (not implied by TENANT_ADMIN alone).
+INSERT INTO "$Schema".user_role (user_id, role_id)
+VALUES ('$TenantAdminUserId', '$RoleHrAdminId')
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
 INSERT INTO "$Schema".permission_scope (id, tenant_id, role_id, resource, action, scope_type)
 SELECT gen_random_uuid(), '$TenantId', '$RoleTenantAdminId', ps.resource, ps.action, ps.scope_type
 FROM "$Schema".permission_scope ps
@@ -709,6 +755,8 @@ VALUES
   ('$ScopeScopeAttendanceAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'read', 'ALL'),
   ('$ScopeAttendancePunchPolicyAllId', '$TenantId', '$RoleHrAdminId', 'attendance', 'punch_policy', 'ALL'),
   ('$ScopeWorkflowManageAllId', '$TenantId', '$RoleHrAdminId', 'workflow', 'manage', 'ALL'),
+  ('$ScopeTimesheetApproveAllId', '$TenantId', '$RoleHrAdminId', 'timesheet', 'approve', 'ALL'),
+  ('$ScopeTimesheetApproveTeamLmId', '$TenantId', '$RoleLineManagerId', 'timesheet', 'approve', 'TEAM'),
   ('$ScopeScopeLeaveTeamLmId', '$TenantId', '$RoleLineManagerId', 'leave', 'approve', 'TEAM'),
   ('$ScopeScopeExpenseTeamLmId', '$TenantId', '$RoleLineManagerId', 'expense', 'approve', 'TEAM')
 ON CONFLICT (role_id, resource, action) DO NOTHING;
@@ -1249,8 +1297,83 @@ INSERT INTO "$Schema".workflow_instance (
 UPDATE "$Schema".expense
 SET workflow_instance_id = '$ExpenseWorkflowInstanceId', updated_at = NOW()
 WHERE id = '$ExpenseId' AND (workflow_instance_id IS DISTINCT FROM '$ExpenseWorkflowInstanceId');
+
+INSERT INTO "$Schema".workflow (id, tenant_id, name, entity_type, is_active)
+VALUES ('$TimesheetWorkflowId', '$TenantId', 'Timesheet week approval', 'TIMESHEET_WEEK_BATCH', true)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$TimesheetWorkflowStep1Id', '$TenantId', '$TimesheetWorkflowId', 1, 'Reporting manager',
+    'REPORTING_MANAGER', NULL, false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
+
+INSERT INTO "$Schema".workflow_step (
+    id, tenant_id, workflow_id, sequence_order, step_name,
+    approver_type, approver_role_id, can_skip, sla_hours
+) VALUES (
+    '$TimesheetWorkflowStep2Id', '$TenantId', '$TimesheetWorkflowId', 2, 'HR verification',
+    'ROLE', '$RoleHrAdminId', false, NULL
+) ON CONFLICT (id) DO UPDATE SET
+    sequence_order = EXCLUDED.sequence_order,
+    step_name = EXCLUDED.step_name,
+    approver_type = EXCLUDED.approver_type,
+    approver_role_id = EXCLUDED.approver_role_id,
+    can_skip = EXCLUDED.can_skip,
+    sla_hours = EXCLUDED.sla_hours,
+    updated_at = NOW();
 "@
 Invoke-TenantSql -Label "0025 workflow (workflow + instance)" -Sql $SqlWorkflow
+
+# =====================================================================
+# 15b. HRMS timesheet / attendance defaults (master_data)
+# =====================================================================
+$SqlHrmsMaster = @"
+INSERT INTO "$Schema".master_data (
+    id, tenant_id, category, data_key, value, description, display_order, is_system, is_active, created_at, updated_at
+) VALUES (
+    '$MdHrmsAttAdjId', '$TenantId', 'HRMS_ATTENDANCE_ADJUSTMENT', 'POLICY',
+    '{"maxSelfAdjustDays":5}', 'Manual punch self-service window (days)', 0, false, true, NOW(), NOW()
+) ON CONFLICT (tenant_id, category, data_key) DO NOTHING;
+
+INSERT INTO "$Schema".master_data (
+    id, tenant_id, category, data_key, value, description, display_order, is_system, is_active, created_at, updated_at
+) VALUES (
+    '$MdHrmsTsLockId', '$TenantId', 'HRMS_TIMESHEET_LOCK', 'POLICY',
+    '{"editableWeekSpan":2,"lockApprovedEntries":true}', 'Timesheet draft horizon + approved lock', 0, false, true, NOW(), NOW()
+) ON CONFLICT (tenant_id, category, data_key) DO NOTHING;
+
+INSERT INTO "$Schema".master_data (
+    id, tenant_id, category, data_key, value, description, display_order, is_system, is_active, created_at, updated_at
+) VALUES (
+    '$MdProjInternalId', '$TenantId', 'TIMESHEET_PROJECT', 'INTERNAL',
+    'Internal / overhead', NULL, 0, false, true, NOW(), NOW()
+) ON CONFLICT (tenant_id, category, data_key) DO NOTHING;
+
+INSERT INTO "$Schema".master_data (
+    id, tenant_id, category, data_key, value, description, display_order, is_system, is_active, created_at, updated_at
+) VALUES (
+    '$MdProjClientAId', '$TenantId', 'TIMESHEET_PROJECT', 'CLIENT-A',
+    'Client Alpha implementation', NULL, 1, false, true, NOW(), NOW()
+) ON CONFLICT (tenant_id, category, data_key) DO NOTHING;
+
+INSERT INTO "$Schema".master_data (
+    id, tenant_id, category, data_key, value, description, display_order, is_system, is_active, created_at, updated_at
+) VALUES (
+    '$MdTaskInternalId', '$TenantId', 'TIMESHEET_TASK', 'INTERNAL',
+    '["ADMIN","MEETING","DEV"]', NULL, 0, false, true, NOW(), NOW()
+) ON CONFLICT (tenant_id, category, data_key) DO NOTHING;
+"@
+Invoke-TenantSql -Label "HRMS master_data (timesheet + attendance policy)" -Sql $SqlHrmsMaster
 
 # =====================================================================
 # 16. NOTIFICATION / COMMUNICATION (0027)
@@ -1407,7 +1530,7 @@ Write-Host "Seed complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Demo tenant logins (password ChangeMe!123):" -ForegroundColor Yellow
 Write-Host '  demo@kabipay.local          - HR_ADMIN + employee (full HR + self-service)'
-Write-Host '  tenant-admin@kabipay.local  - TENANT_ADMIN (admin shell + leave configuration)'
+Write-Host '  tenant-admin@kabipay.local  - TENANT_ADMIN + HR_ADMIN row (workflow fallbacks + admin shell)'
 Write-Host '  manager@kabipay.local       - LINE_MANAGER (approvals + analytics:read + attendance:punch_self)'
 Write-Host '  staff@kabipay.local         - DEMO_STAFF (benefits:self, onboarding:self, grievance:self, attendance:punch_self)'
 Write-Host ""

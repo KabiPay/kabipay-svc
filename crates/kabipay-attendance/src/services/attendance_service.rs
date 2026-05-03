@@ -21,6 +21,8 @@ use sea_orm::{
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::services::{hrms_master_service, timesheet_policy};
+
 pub async fn list_shifts(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -41,6 +43,8 @@ pub async fn list_attendance(
     tenant_id: Uuid,
     limit: u64,
     scope_filter: &EmployeeScopeFilter,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
 ) -> KabiPayResult<Vec<attendance::Model>> {
     let limit = limit.clamp(1, 500);
     match scope_filter {
@@ -51,6 +55,12 @@ pub async fn list_attendance(
     let mut q = attendance::Entity::find().filter(attendance::Column::TenantId.eq(tenant_id));
     if let EmployeeScopeFilter::EmployeeIds(ids) = scope_filter {
         q = q.filter(attendance::Column::EmployeeId.is_in(ids.clone()));
+    }
+    if let Some(fd) = from_date {
+        q = q.filter(attendance::Column::WorkDate.gte(fd));
+    }
+    if let Some(td) = to_date {
+        q = q.filter(attendance::Column::WorkDate.lte(td));
     }
     q.order_by_desc(attendance::Column::WorkDate)
         .limit(limit)
@@ -254,6 +264,7 @@ pub async fn add_manual_attendance_segment(
     work_date: NaiveDate,
     check_in_time: NaiveTime,
     check_out_time: NaiveTime,
+    privileged_regularize: bool,
 ) -> KabiPayResult<attendance::Model> {
     let today = Utc::now().date_naive();
     if work_date > today {
@@ -265,6 +276,15 @@ pub async fn add_manual_attendance_segment(
         return Err(KabiPayError::Validation(
             "checkInTime must be before checkOutTime (same-day segment only)".into(),
         ));
+    }
+    let policy = hrms_master_service::load_attendance_adjustment_policy(db, tenant_id).await?;
+    let days_since = today.signed_duration_since(work_date).num_days();
+    let window = policy.max_self_adjust_days.max(0);
+    if days_since > window && !privileged_regularize {
+        return Err(KabiPayError::Forbidden(format!(
+            "manual attendance is limited to the last {} calendar days unless you hold attendance regularization permission",
+            window
+        )));
     }
     let now_ts = Utc::now();
     let id = Uuid::new_v4();
@@ -302,13 +322,21 @@ pub async fn list_timesheet_entries(
     tenant_id: Uuid,
     employee_id: Uuid,
     limit: u64,
+    from_date: Option<NaiveDate>,
+    to_date: Option<NaiveDate>,
 ) -> KabiPayResult<Vec<timesheet_entry::Model>> {
-    let limit = limit.clamp(1, 200);
-    timesheet_entry::Entity::find()
+    let limit = limit.clamp(1, 500);
+    let mut q = timesheet_entry::Entity::find()
         .filter(timesheet_entry::Column::TenantId.eq(tenant_id))
         .filter(timesheet_entry::Column::EmployeeId.eq(employee_id))
-        .filter(timesheet_entry::Column::IsDeleted.eq(false))
-        .order_by_desc(timesheet_entry::Column::WorkDate)
+        .filter(timesheet_entry::Column::IsDeleted.eq(false));
+    if let Some(fd) = from_date {
+        q = q.filter(timesheet_entry::Column::WorkDate.gte(fd));
+    }
+    if let Some(td) = to_date {
+        q = q.filter(timesheet_entry::Column::WorkDate.lte(td));
+    }
+    q.order_by_desc(timesheet_entry::Column::WorkDate)
         .limit(limit)
         .all(db)
         .await
@@ -329,6 +357,14 @@ pub async fn create_timesheet_entry(
             "hoursWorked must be greater than zero".into(),
         ));
     }
+    timesheet_policy::assert_work_date_allowed_for_entry(db, tenant_id, work_date).await?;
+    crate::services::timesheet_project_assignment_service::assert_project_allowed_for_employee(
+        db,
+        tenant_id,
+        employee_id,
+        project_code.as_deref(),
+    )
+    .await?;
     let id = Uuid::new_v4();
     let now = Utc::now();
     let am = timesheet_entry::ActiveModel {
@@ -340,6 +376,7 @@ pub async fn create_timesheet_entry(
         project_code: Set(project_code),
         description: Set(description),
         status: Set("DRAFT".into()),
+        batch_id: Set(None),
         is_deleted: Set(false),
         deleted_at: Set(None),
         deleted_by: Set(None),
@@ -376,12 +413,71 @@ pub async fn delete_timesheet_entry(
     if row.is_deleted {
         return Ok(false);
     }
+    timesheet_policy::assert_entry_mut_allowed(db, tenant_id, &row).await?;
+    let st = row.status.trim().to_uppercase();
+    if st != "DRAFT" {
+        return Err(KabiPayError::Validation(
+            "only draft timesheet rows can be deleted".into(),
+        ));
+    }
     let mut am: timesheet_entry::ActiveModel = row.into();
     am.is_deleted = Set(true);
     am.deleted_at = Set(Some(Utc::now()));
     am.updated_at = Set(Utc::now());
     am.update(db).await?;
     Ok(true)
+}
+
+pub async fn update_timesheet_entry(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    entry_id: Uuid,
+    work_date: NaiveDate,
+    hours_worked: Decimal,
+    project_code: Option<String>,
+    description: Option<String>,
+) -> KabiPayResult<timesheet_entry::Model> {
+    if hours_worked <= Decimal::ZERO {
+        return Err(KabiPayError::Validation(
+            "hoursWorked must be greater than zero".into(),
+        ));
+    }
+    let row = timesheet_entry::Entity::find()
+        .filter(timesheet_entry::Column::Id.eq(entry_id))
+        .filter(timesheet_entry::Column::TenantId.eq(tenant_id))
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "timesheet_entry",
+            id: entry_id.to_string(),
+        })?;
+    if row.employee_id != employee_id {
+        return Err(KabiPayError::Forbidden(
+            "timesheet entry belongs to another employee".into(),
+        ));
+    }
+    timesheet_policy::assert_entry_mut_allowed(db, tenant_id, &row).await?;
+    timesheet_policy::assert_work_date_allowed_for_entry(db, tenant_id, work_date).await?;
+    crate::services::timesheet_project_assignment_service::assert_project_allowed_for_employee(
+        db,
+        tenant_id,
+        employee_id,
+        project_code.as_deref(),
+    )
+    .await?;
+    let now = Utc::now();
+    let mut am: timesheet_entry::ActiveModel = row.into();
+    am.work_date = Set(work_date);
+    am.hours_worked = Set(hours_worked);
+    am.project_code = Set(project_code);
+    am.description = Set(description);
+    am.updated_at = Set(now);
+    am.update(db).await?;
+    timesheet_entry::Entity::find_by_id(entry_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| KabiPayError::Internal("timesheet_entry missing after update".into()))
 }
 
 pub fn parse_hours(s: &str) -> KabiPayResult<Decimal> {

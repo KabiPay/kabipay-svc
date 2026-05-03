@@ -5,6 +5,7 @@
 use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use kabipay_common::context::{ClientViewerEmployee, ScopeType};
 use kabipay_common::workflow_approval;
+use kabipay_common::workflow_current_step;
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{holiday, holiday_calendar};
@@ -467,7 +468,7 @@ pub async fn approve_leave_request(
     let now = Utc::now();
 
     if let Some(inst_id) = model.workflow_instance_id {
-        let inst = workflow_instance::Entity::find_by_id(inst_id)
+        let mut inst = workflow_instance::Entity::find_by_id(inst_id)
             .filter(workflow_instance::Column::TenantId.eq(tenant_id))
             .one(&txn)
             .await?
@@ -479,6 +480,10 @@ pub async fn approve_leave_request(
                 "workflow instance is not in progress — cannot approve this leave".into(),
             ));
         }
+        inst = workflow_current_step::ensure_workflow_instance_current_step_repaired(
+            &txn, tenant_id, &inst, now,
+        )
+        .await?;
         let cur_step_id = inst.current_step_id.ok_or_else(|| {
             KabiPayError::Validation("workflow instance has no current step".into())
         })?;
@@ -626,13 +631,17 @@ pub async fn reject_leave_request(
     }
 
     if let Some(inst_id) = model.workflow_instance_id {
-        if let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
+        if let Some(mut inst) = workflow_instance::Entity::find_by_id(inst_id)
             .filter(workflow_instance::Column::TenantId.eq(tenant_id))
             .one(&txn)
             .await?
         {
             if inst.status == WF_STATUS_IN_PROGRESS {
                 let now = Utc::now();
+                inst = workflow_current_step::ensure_workflow_instance_current_step_repaired(
+                    &txn, tenant_id, &inst, now,
+                )
+                .await?;
                 if let Some(step_id) = inst.current_step_id {
                     let st = workflow_step::Entity::find_by_id(step_id)
                         .filter(workflow_step::Column::TenantId.eq(tenant_id))

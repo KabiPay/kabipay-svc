@@ -12,6 +12,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
     QueryOrder, QuerySelect, Set,
 };
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::entities::d0007_employee_core::employee;
@@ -68,6 +69,33 @@ pub async fn find_by_id(
         .one(db)
         .await
         .map_err(KabiPayError::from)
+}
+
+/// Full display names for referenced employees (e.g. reporting manager labels).
+pub async fn map_full_names(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> KabiPayResult<HashMap<Uuid, String>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = employee::Entity::find()
+        .filter(employee::Column::TenantId.eq(tenant_id))
+        .filter(employee::Column::IsDeleted.eq(false))
+        .filter(employee::Column::Id.is_in(ids.to_vec()))
+        .all(db)
+        .await
+        .map_err(KabiPayError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|m| {
+            let full_name = format!("{} {}", m.first_name.trim(), m.last_name.trim())
+                .trim()
+                .to_string();
+            (m.id, full_name)
+        })
+        .collect())
 }
 
 /// Whether a fetched employee row is visible under `scope` (used for `employee(id:)` / IDOR checks).

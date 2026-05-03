@@ -1,6 +1,6 @@
 //! Tenant RBAC administration (roles, permissions, `user_role`, `permission_scope`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use kabipay_common::{KabiPayError, KabiPayResult};
@@ -36,6 +36,24 @@ pub async fn list_users(db: &DatabaseConnection, tenant_id: Uuid, limit: u64) ->
         .all(db)
         .await?;
     Ok(rows)
+}
+
+/// Login emails for linked user references on employee rows (directory labels).
+pub async fn map_user_emails_by_ids(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> KabiPayResult<HashMap<Uuid, String>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = user::Entity::find()
+        .filter(user::Column::TenantId.eq(tenant_id))
+        .filter(user::Column::IsDeleted.eq(false))
+        .filter(user::Column::Id.is_in(ids.to_vec()))
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().map(|r| (r.id, r.email)).collect())
 }
 
 async fn ensure_role_in_tenant(

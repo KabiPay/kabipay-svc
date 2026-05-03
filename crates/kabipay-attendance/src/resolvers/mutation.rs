@@ -11,12 +11,18 @@ use kabipay_common::{
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    AddManualAttendanceSegmentInput, AttendanceDto, AttendancePunchPolicyDto,
-    CreateTimesheetEntryInput, HolidayCalendarDto, HolidayDayDto, PunchTodayInput,
-    TimesheetEntryDto, UpsertAttendancePunchPolicyInput, UpsertHolidayCalendarInput,
-    UpsertHolidayDayInput,
+    AddManualAttendanceSegmentInput, AttendanceAdjustmentPolicyDto, AttendanceDto,
+    AttendancePunchPolicyDto, CreateTimesheetEntryInput, HolidayCalendarDto, HolidayDayDto,
+    PunchTodayInput, TimesheetEntryDto, TimesheetLockPolicyDto, TimesheetWeekBatchDto,
+    UpdateTimesheetEntryInput, UpsertAttendanceAdjustmentPolicyInput,
+    UpsertAttendancePunchPolicyInput, UpsertHolidayCalendarInput, UpsertHolidayDayInput,
+    UpsertTimesheetLockPolicyInput,
 };
-use crate::services::{attendance_service, punch_policy};
+use crate::resolvers::timesheet_assignment_auth;
+use crate::services::{
+    attendance_service, hrms_master_service, punch_policy, timesheet_batch_service,
+    timesheet_project_assignment_service,
+};
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
@@ -32,6 +38,20 @@ fn require_leave_configuration_admin(ctx: &Context<'_>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn require_hrms_timesheet_settings(ctx: &Context<'_>) -> Result<()> {
+    let claims = require_client_claims(ctx)?;
+    if claims.can_configure_attendance_punch_policy() || claims.can_manage_timesheet_configuration()
+    {
+        return Ok(());
+    }
+    Err(
+        KabiPayError::Forbidden(
+            "missing permission — needs attendance punch policy or timesheet manage".into(),
+        )
+        .into_graphql(),
+    )
 }
 
 pub struct MutationRoot;
@@ -114,10 +134,20 @@ impl MutationRoot {
         input: AddManualAttendanceSegmentInput,
     ) -> Result<AttendanceDto> {
         let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_record_own_attendance_punches() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "attendance:punch_self or employee directory permission required".into(),
+                )
+                .into_graphql(),
+            );
+        }
         let db = tenant_db(ctx, tenant_id).await?;
         let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
             .await
             .map_err(KabiPayError::into_graphql)?;
+        let privileged = claims.can_regularize_attendance_records();
         let m = attendance_service::add_manual_attendance_segment(
             &db,
             tenant_id,
@@ -125,6 +155,7 @@ impl MutationRoot {
             input.work_date,
             input.check_in_time,
             input.check_out_time,
+            privileged,
         )
         .await
         .map_err(KabiPayError::into_graphql)?;
@@ -168,6 +199,216 @@ impl MutationRoot {
         attendance_service::delete_timesheet_entry(&db, tenant_id, employee_id, eid)
             .await
             .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn update_timesheet_entry(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateTimesheetEntryInput,
+    ) -> Result<TimesheetEntryDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let eid = parse_uuid(&input.id, "id")?;
+        let h = attendance_service::parse_hours(&input.hours_worked)
+            .map_err(KabiPayError::into_graphql)?;
+        let m = attendance_service::update_timesheet_entry(
+            &db,
+            tenant_id,
+            employee_id,
+            eid,
+            input.work_date,
+            h,
+            input.project_code,
+            input.description,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(TimesheetEntryDto::from(m))
+    }
+
+    async fn submit_timesheet_week(
+        &self,
+        ctx: &Context<'_>,
+        week_start_date: chrono::NaiveDate,
+    ) -> Result<TimesheetWeekBatchDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let employee_id = resolve_client_employee_id(ctx, &db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let m =
+            timesheet_batch_service::submit_timesheet_week(&db, tenant_id, employee_id, week_start_date)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+        Ok(TimesheetWeekBatchDto::from(m))
+    }
+
+    async fn approve_timesheet_week_batch(&self, ctx: &Context<'_>, id: ID) -> Result<TimesheetWeekBatchDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let uid = claims.sub;
+        let bid = parse_uuid(&id, "id")?;
+        let m = timesheet_batch_service::approve_timesheet_week_batch(&db, tenant_id, bid, uid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(TimesheetWeekBatchDto::from(m))
+    }
+
+    async fn reject_timesheet_week_batch(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        rejection_reason: Option<String>,
+    ) -> Result<bool> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let uid = claims.sub;
+        let bid = parse_uuid(&id, "id")?;
+        timesheet_batch_service::reject_timesheet_week_batch(&db, tenant_id, bid, uid, rejection_reason)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn upsert_attendance_adjustment_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertAttendanceAdjustmentPolicyInput,
+    ) -> Result<AttendanceAdjustmentPolicyDto> {
+        require_hrms_timesheet_settings(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let json = serde_json::to_string(&hrms_master_service::AttendanceAdjustmentPolicy {
+            max_self_adjust_days: input.max_self_adjust_days,
+        })
+        .map_err(|e| KabiPayError::Validation(e.to_string()).into_graphql())?;
+        hrms_master_service::upsert_policy_json(
+            &db,
+            tenant_id,
+            hrms_master_service::CAT_ATTENDANCE_ADJUSTMENT,
+            &json,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(AttendanceAdjustmentPolicyDto {
+            max_self_adjust_days: input.max_self_adjust_days,
+        })
+    }
+
+    async fn upsert_timesheet_lock_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertTimesheetLockPolicyInput,
+    ) -> Result<TimesheetLockPolicyDto> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_timesheet_configuration() {
+            return Err(KabiPayError::Forbidden("timesheet:manage required".into()).into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let json = serde_json::to_string(&hrms_master_service::TimesheetLockPolicy {
+            editable_week_span: input.editable_week_span,
+            lock_approved_entries: input.lock_approved_entries,
+        })
+        .map_err(|e| KabiPayError::Validation(e.to_string()).into_graphql())?;
+        hrms_master_service::upsert_policy_json(&db, tenant_id, hrms_master_service::CAT_TIMESHEET_LOCK, &json)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(TimesheetLockPolicyDto {
+            editable_week_span: input.editable_week_span,
+            lock_approved_entries: input.lock_approved_entries,
+        })
+    }
+
+    async fn upsert_timesheet_project(
+        &self,
+        ctx: &Context<'_>,
+        code: String,
+        name: String,
+        #[graphql(default)] display_order: Option<i32>,
+    ) -> Result<bool> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_timesheet_configuration() {
+            return Err(KabiPayError::Forbidden("timesheet:manage required".into()).into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let c = code.trim().to_uppercase();
+        if c.is_empty() {
+            return Err(KabiPayError::Validation("project code required".into()).into_graphql());
+        }
+        hrms_master_service::upsert_catalog_row(
+            &db,
+            tenant_id,
+            hrms_master_service::CAT_TIMESHEET_PROJECT,
+            &c,
+            name.trim(),
+            display_order,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
+
+    async fn upsert_timesheet_task_types(
+        &self,
+        ctx: &Context<'_>,
+        project_code: String,
+        task_codes: Vec<String>,
+    ) -> Result<bool> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_timesheet_configuration() {
+            return Err(KabiPayError::Forbidden("timesheet:manage required".into()).into_graphql());
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let pc = project_code.trim().to_uppercase();
+        if pc.is_empty() {
+            return Err(KabiPayError::Validation("projectCode required".into()).into_graphql());
+        }
+        let json = serde_json::to_string(&task_codes).map_err(|e| {
+            KabiPayError::Validation(format!("task codes: {e}")).into_graphql()
+        })?;
+        hrms_master_service::upsert_catalog_row(
+            &db,
+            tenant_id,
+            hrms_master_service::CAT_TIMESHEET_TASK,
+            &pc,
+            &json,
+            Some(0),
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
+    }
+
+    /// Replace per-employee allowed project codes (empty list clears restrictions — full catalog allowed).
+    async fn set_employee_timesheet_projects(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: ID,
+        project_codes: Vec<String>,
+    ) -> Result<bool> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let target = parse_uuid(&employee_id, "employeeId")?;
+        timesheet_assignment_auth::assert_can_write_employee_assignment_target(ctx, &db, tenant_id, target)
+            .await?;
+        let claims = require_client_claims(ctx)?;
+        timesheet_project_assignment_service::set_assignments_for_employee(
+            &db,
+            tenant_id,
+            target,
+            project_codes,
+            Some(claims.sub),
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(true)
     }
 
     async fn upsert_holiday_calendar(

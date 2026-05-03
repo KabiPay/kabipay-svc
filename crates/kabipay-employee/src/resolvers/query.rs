@@ -16,7 +16,7 @@ use crate::resolvers::types::{
     TenantCatalogPermissionDto, TenantDirectoryRoleDto, TenantDirectoryUserDto,
     TenantPermissionScopeDto,
 };
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 use crate::entities::d0008_document_system::employee_document;
 use crate::resolvers::scope::{
@@ -66,7 +66,8 @@ impl QueryRoot {
         let models = employee_service::list(&db, tenant_id, limit, scope, viewer)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        Ok(models.into_iter().map(EmployeeDto::from).collect())
+        let dtos: Vec<EmployeeDto> = models.into_iter().map(EmployeeDto::from).collect();
+        enrich_employee_dtos(&db, tenant_id, dtos).await
     }
 
     /// Compensation rows driving payroll base salary (`employment_history`), newest first.
@@ -485,7 +486,63 @@ async fn resolve_employee_dto(ctx: &Context<'_>, id: ID) -> Result<Option<Employ
     } else {
         model
     };
-    Ok(model.map(EmployeeDto::from))
+    Ok(match model {
+        Some(m) => {
+            let dto = EmployeeDto::from(m);
+            let mut enriched = enrich_employee_dtos(&db, tenant_id, vec![dto]).await?;
+            enriched.pop()
+        }
+        None => None,
+    })
+}
+
+async fn enrich_employee_dtos(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    dtos: Vec<EmployeeDto>,
+) -> Result<Vec<EmployeeDto>> {
+    fn push_uuid(ids: &mut Vec<Uuid>, id: &Option<ID>) {
+        if let Some(u) = id.as_ref().and_then(|raw| Uuid::parse_str(raw.as_str()).ok()) {
+            ids.push(u);
+        }
+    }
+    fn dedup_sort(ids: &mut Vec<Uuid>) {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+
+    let mut dept_ids = Vec::new();
+    let mut desig_ids = Vec::new();
+    let mut user_ids = Vec::new();
+    let mut mgr_ids = Vec::new();
+    for d in &dtos {
+        push_uuid(&mut dept_ids, &d.department_id);
+        push_uuid(&mut desig_ids, &d.designation_id);
+        push_uuid(&mut user_ids, &d.user_id);
+        push_uuid(&mut mgr_ids, &d.reporting_manager_id);
+    }
+    dedup_sort(&mut dept_ids);
+    dedup_sort(&mut desig_ids);
+    dedup_sort(&mut user_ids);
+    dedup_sort(&mut mgr_ids);
+
+    let dept_map = org_service::map_department_names(db, tenant_id, &dept_ids)
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+    let desig_map = org_service::map_designation_titles(db, tenant_id, &desig_ids)
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+    let user_map = rbac_admin_service::map_user_emails_by_ids(db, tenant_id, &user_ids)
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+    let mgr_map = employee_service::map_full_names(db, tenant_id, &mgr_ids)
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+
+    Ok(dtos
+        .into_iter()
+        .map(|d| d.with_reference_labels(&dept_map, &desig_map, &user_map, &mgr_map))
+        .collect())
 }
 
 fn parse_uuid(raw: &ID, field: &'static str) -> Result<Uuid> {

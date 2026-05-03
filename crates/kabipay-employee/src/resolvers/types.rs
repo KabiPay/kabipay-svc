@@ -2,6 +2,7 @@
 
 use async_graphql::{InputObject, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, Utc};
+use uuid::Uuid;
 
 use crate::entities::d0006_org_hierarchy::{department, designation};
 use crate::entities::d0007_employee_core::{employee, employment_history};
@@ -29,6 +30,16 @@ pub struct EmployeeDto {
     pub designation_id: Option<ID>,
     pub reporting_manager_id: Option<ID>,
     pub user_id: Option<ID>,
+    /// Department display name when `department_id` is set (batch-resolved for directory queries).
+    #[graphql(name = "departmentName")]
+    pub department_name: Option<String>,
+    #[graphql(name = "designationTitle")]
+    pub designation_title: Option<String>,
+    /// Linked login email when `user_id` is set.
+    #[graphql(name = "linkedUserEmail")]
+    pub linked_user_email: Option<String>,
+    #[graphql(name = "reportingManagerName")]
+    pub reporting_manager_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -406,9 +417,33 @@ impl From<employee::Model> for EmployeeDto {
             designation_id: m.designation_id.map(|id| ID(id.to_string())),
             reporting_manager_id: m.reporting_manager_id.map(|id| ID(id.to_string())),
             user_id: m.user_id.map(|id| ID(id.to_string())),
+            department_name: None,
+            designation_title: None,
+            linked_user_email: None,
+            reporting_manager_name: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
+    }
+}
+
+impl EmployeeDto {
+    pub fn with_reference_labels(
+        mut self,
+        dept_map: &std::collections::HashMap<Uuid, String>,
+        desig_map: &std::collections::HashMap<Uuid, String>,
+        user_email_map: &std::collections::HashMap<Uuid, String>,
+        mgr_name_map: &std::collections::HashMap<Uuid, String>,
+    ) -> Self {
+        fn opt_uuid(id: &Option<ID>) -> Option<Uuid> {
+            id.as_ref().and_then(|raw| Uuid::parse_str(raw.as_str()).ok())
+        }
+        self.department_name = opt_uuid(&self.department_id).and_then(|u| dept_map.get(&u).cloned());
+        self.designation_title = opt_uuid(&self.designation_id).and_then(|u| desig_map.get(&u).cloned());
+        self.linked_user_email = opt_uuid(&self.user_id).and_then(|u| user_email_map.get(&u).cloned());
+        self.reporting_manager_name =
+            opt_uuid(&self.reporting_manager_id).and_then(|u| mgr_name_map.get(&u).cloned());
+        self
     }
 }
 

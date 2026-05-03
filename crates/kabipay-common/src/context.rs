@@ -218,6 +218,12 @@ pub const PERM_COMPENSATION_MANAGE: &str = "compensation:manage";
 pub const PERM_ANALYTICS_READ: &str = "analytics:read";
 /// Record live punches and read **own** punch-day summary (`punch_today`, `punchDaySummary`).
 pub const PERM_ATTENDANCE_PUNCH_SELF: &str = "attendance:punch_self";
+/// Correct missed punches beyond the self-service window (manager / HR path).
+pub const PERM_ATTENDANCE_REGULARIZE: &str = "attendance:regularize";
+/// Approve or reject submitted weekly timesheets.
+pub const PERM_TIMESHEET_APPROVE: &str = "timesheet:approve";
+/// Configure timesheet catalogs (projects / tasks) and lock policy (`master_data` backed).
+pub const PERM_TIMESHEET_MANAGE: &str = "timesheet:manage";
 
 /// HTTP-derived metadata attached to each GraphQL request by [`crate::subgraph::tenant_graphql_post`].
 /// Values come from gateway headers, not from GraphQL variables (so they are suitable for policy).
@@ -476,6 +482,39 @@ impl ClientClaims {
             PERM_EMPLOYEE_WRITE,
             PERM_EMPLOYEE_MANAGE,
         ]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Manual attendance corrections beyond the configured employee window (`attendance:regularize`).
+    pub fn can_regularize_attendance_records(&self) -> bool {
+        if self.has_any_permission(&[PERM_ATTENDANCE_REGULARIZE, PERM_EMPLOYEE_MANAGE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// Approve weekly timesheet batches (`timesheet:approve`), analogous to leave approval.
+    pub fn can_approve_timesheet_requests(&self) -> bool {
+        if self.has_any_permission(&[PERM_TIMESHEET_APPROVE]) {
+            return true;
+        }
+        self.roles.iter().any(|r| {
+            let u = r.to_ascii_uppercase();
+            u == "HR_ADMIN" || u == "TENANT_ADMIN" || u == "ORG_ADMIN"
+        })
+    }
+
+    /// HR configuration for timesheet projects/tasks and lock JSON (`timesheet:manage`).
+    pub fn can_manage_timesheet_configuration(&self) -> bool {
+        if self.has_any_permission(&[PERM_TIMESHEET_MANAGE]) {
             return true;
         }
         self.roles.iter().any(|r| {

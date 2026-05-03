@@ -24,6 +24,7 @@ pub mod subgraph;
 pub mod telemetry;
 pub mod tenant_seed;
 pub mod workflow_approval;
+pub mod workflow_current_step;
 
 pub use context::{
     ClientContext, ClientRequestHints, ClientViewerEmployee, OperatorContext, ScopeType,

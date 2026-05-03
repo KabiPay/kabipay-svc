@@ -3,8 +3,8 @@
 //! `workflow_step.approver_type`:
 //! - `REPORTING_MANAGER` / `MANAGER` / `LINE_MANAGER` — only the subject employee's reporting manager (`employee.user_id`).
 //! - `ROLE` — requires `approver_role_id`; user must have that role in `user_role` for the tenant.
-//! - `REPORTING_MANAGER_OR_ROLE` — **either** the reporting manager **or** a user with `approver_role_id`
-//!   (e.g. HR) may approve in one step (substitute / hierarchy cover when manager is unavailable).
+//! - `REPORTING_MANAGER_OR_ROLE` — **either** the reporting manager **or** a user assigned `approver_role_id`
+//!   (e.g. HR_ADMIN via `user_role`). TEAM-scoped line managers still act only via the reporting-manager branch.
 
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 
@@ -141,7 +141,7 @@ async fn assert_user_has_role(
     Ok(())
 }
 
-/// Reporting manager **or** a user assigned `fallback_role_id` (e.g. HR admin) may act — single-step hierarchy cover.
+/// Reporting manager **or** a user assigned `fallback_role_id` (e.g. HR_ADMIN).
 async fn assert_reporting_manager_or_fallback_role(
     conn: &impl ConnectionTrait,
     tenant_id: Uuid,
@@ -160,13 +160,16 @@ async fn assert_reporting_manager_or_fallback_role(
     {
         return Ok(());
     }
-    match assert_user_has_role(conn, tenant_id, approver_user_id, fallback_role_id).await {
-        Ok(()) => Ok(()),
-        Err(_) => Err(KabiPayError::Forbidden(
-            "only the employee's reporting manager or a user with the workflow HR fallback role may approve or reject at this step"
-                .into(),
-        )),
+    if assert_user_has_role(conn, tenant_id, approver_user_id, fallback_role_id)
+        .await
+        .is_ok()
+    {
+        return Ok(());
     }
+    Err(KabiPayError::Forbidden(
+        "only the employee's reporting manager or the workflow fallback role (e.g. HR admin) may approve or reject at this step"
+            .into(),
+    ))
 }
 
 /// Ensures `approver_user_id` may act on `step` for requests from `subject_employee_id`.

@@ -13,10 +13,15 @@ use kabipay_common::{
 use uuid::Uuid;
 
 use crate::resolvers::types::{
-    AttendanceDto, AttendancePunchPolicyDto, HolidayCalendarDto, HolidayDayDto, HolidayEntryDto,
-    PunchDaySummaryDto, ShiftDto, TimesheetEntryDto,
+    AttendanceAdjustmentPolicyDto, AttendanceDto, AttendancePunchPolicyDto, HolidayCalendarDto,
+    HolidayDayDto, HolidayEntryDto, PunchDaySummaryDto, ShiftDto, TimesheetEntryDto,
+    TimesheetLockPolicyDto, TimesheetProjectOptionDto, TimesheetWeekBatchDto,
 };
-use crate::services::{attendance_service, punch_policy};
+use crate::resolvers::timesheet_assignment_auth;
+use crate::services::{
+    attendance_service, hrms_master_service, punch_policy, timesheet_batch_service,
+    timesheet_project_assignment_service,
+};
 
 pub struct QueryRoot;
 
@@ -65,6 +70,8 @@ impl QueryRoot {
         &self,
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: u64,
+        from_date: Option<NaiveDate>,
+        to_date: Option<NaiveDate>,
     ) -> Result<Vec<AttendanceDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
@@ -73,7 +80,7 @@ impl QueryRoot {
         let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        let rows = attendance_service::list_attendance(&db, tenant_id, limit, &filt)
+        let rows = attendance_service::list_attendance(&db, tenant_id, limit, &filt, from_date, to_date)
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(AttendanceDto::from).collect())
@@ -132,6 +139,8 @@ impl QueryRoot {
         ctx: &Context<'_>,
         employee_id: Option<ID>,
         #[graphql(default = 100)] limit: u64,
+        from_date: Option<NaiveDate>,
+        to_date: Option<NaiveDate>,
     ) -> Result<Vec<TimesheetEntryDto>> {
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
@@ -150,10 +159,157 @@ impl QueryRoot {
         if !filt.allows_employee(emp) {
             return Ok(vec![]);
         }
-        let rows = attendance_service::list_timesheet_entries(&db, tenant_id, emp, limit)
+        let rows = attendance_service::list_timesheet_entries(
+            &db,
+            tenant_id,
+            emp,
+            limit,
+            from_date,
+            to_date,
+        )
             .await
             .map_err(KabiPayError::into_graphql)?;
         Ok(rows.into_iter().map(TimesheetEntryDto::from).collect())
+    }
+
+    async fn attendance_adjustment_policy(&self, ctx: &Context<'_>) -> Result<AttendanceAdjustmentPolicyDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let p = hrms_master_service::load_attendance_adjustment_policy(&db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(AttendanceAdjustmentPolicyDto {
+            max_self_adjust_days: p.max_self_adjust_days,
+        })
+    }
+
+    async fn timesheet_lock_policy(&self, ctx: &Context<'_>) -> Result<TimesheetLockPolicyDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let p = hrms_master_service::load_timesheet_lock_policy(&db, tenant_id)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(TimesheetLockPolicyDto {
+            editable_week_span: p.editable_week_span,
+            lock_approved_entries: p.lock_approved_entries,
+        })
+    }
+
+    async fn timesheet_projects(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TimesheetProjectOptionDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = hrms_master_service::list_projects(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| TimesheetProjectOptionDto {
+                code: m.data_key,
+                name: m.value,
+            })
+            .collect())
+    }
+
+    async fn timesheet_task_types(
+        &self,
+        ctx: &Context<'_>,
+        project_code: String,
+    ) -> Result<Vec<String>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = hrms_master_service::list_task_rows_for_project(&db, tenant_id, project_code.trim())
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let Some(first) = rows.into_iter().next() else {
+            return Ok(vec![]);
+        };
+        serde_json::from_str::<Vec<String>>(&first.value).map_err(|e| {
+            KabiPayError::Validation(format!("task types JSON: {e}")).into_graphql()
+        })
+    }
+
+    /// Projects the employee may log hours against (full catalog when no per-employee assignments exist).
+    /// Omit `employeeId` for the JWT-linked employee.
+    async fn timesheet_projects_for_employee(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: Option<ID>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TimesheetProjectOptionDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let target = if let Some(id) = &employee_id {
+            parse_uuid(id, "employeeId")?
+        } else {
+            resolve_client_employee_id(ctx, &db, tenant_id)
+                .await
+                .map_err(KabiPayError::into_graphql)?
+        };
+        timesheet_assignment_auth::assert_can_read_employee_assignment_target(
+            ctx, &db, tenant_id, target,
+        )
+        .await?;
+        let rows = timesheet_project_assignment_service::visible_projects_for_employee(
+            &db, tenant_id, target, limit,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| TimesheetProjectOptionDto {
+                code: m.data_key,
+                name: m.value,
+            })
+            .collect())
+    }
+
+    /// Assigned project codes only (empty ⇒ unrestricted catalog).
+    async fn employee_timesheet_project_codes(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: ID,
+    ) -> Result<Vec<String>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let target = parse_uuid(&employee_id, "employeeId")?;
+        timesheet_assignment_auth::assert_can_read_employee_assignment_target(
+            ctx, &db, tenant_id, target,
+        )
+        .await?;
+        timesheet_project_assignment_service::list_assigned_codes(&db, tenant_id, target)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn timesheet_week_batches(
+        &self,
+        ctx: &Context<'_>,
+        status: Option<String>,
+        #[graphql(default = 80)] limit: u64,
+    ) -> Result<Vec<TimesheetWeekBatchDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_approve_timesheet_requests() {
+            return Err(KabiPayError::Forbidden(
+                "timesheet week queue requires timesheet approval permission".into(),
+            )
+            .into_graphql());
+        }
+        let db = tenant_db(ctx, tenant_id).await?;
+        let scope = data_scope_from_context(ctx, SCOPE_RES_ATTENDANCE);
+        let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
+        let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let rows =
+            timesheet_batch_service::list_timesheet_week_batches(&db, tenant_id, status, limit, &filt)
+                .await
+                .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TimesheetWeekBatchDto::from).collect())
     }
 
     /// Admin: list holiday calendars (tenant). Requires leave configuration permission.
