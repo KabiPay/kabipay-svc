@@ -16,11 +16,21 @@ pub const ALLOWED_MUTED_TOPICS: &[&str] = &[
     "leave", "expense", "travel", "tax", "hr_direct", "other",
 ];
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NotificationPrefs {
     pub in_app_enabled: bool,
     pub announcements_enabled: bool,
     pub muted_topics: HashSet<String>,
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            in_app_enabled: true,
+            announcements_enabled: true,
+            muted_topics: HashSet::new(),
+        }
+    }
 }
 
 impl NotificationPrefs {
@@ -92,11 +102,7 @@ pub async fn load_notification_prefs(
         .map_err(KabiPayError::from)?;
     Ok(match row {
         Some(m) => NotificationPrefs::from_model(&m),
-        None => NotificationPrefs {
-            in_app_enabled: true,
-            announcements_enabled: true,
-            muted_topics: HashSet::new(),
-        },
+        None => NotificationPrefs::default(),
     })
 }
 

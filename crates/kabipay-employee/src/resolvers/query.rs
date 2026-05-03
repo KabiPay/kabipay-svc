@@ -164,6 +164,30 @@ impl QueryRoot {
         Ok(rows.into_iter().map(DesignationDto::from).collect())
     }
 
+    /// Tenant roles for assigning **ROLE**-scoped expense policies (`expense:manage` etc.).
+    /// Unlike [`Self::tenant_directory_roles`], this does not require **`role:manage`**.
+    async fn expense_assignable_roles(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 100)] limit: u64,
+    ) -> Result<Vec<TenantDirectoryRoleDto>> {
+        let claims = require_client_claims(ctx)?;
+        if !claims.can_manage_expense_configuration() {
+            return Err(
+                KabiPayError::Forbidden(
+                    "expense configuration permission required to list roles for policies".into(),
+                )
+                .into_graphql(),
+            );
+        }
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let rows = rbac_admin_service::list_roles(&db, tenant_id, limit)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows.into_iter().map(TenantDirectoryRoleDto::from).collect())
+    }
+
     /// Reporting hierarchy as a **flat** list (`reportingManagerId` → parent). Build a tree in the client.
     /// Respects the same **`employee`** `resource_scopes` as **`employees`** (SELF / TEAM / DEPARTMENT / ALL).
     async fn org_chart(
