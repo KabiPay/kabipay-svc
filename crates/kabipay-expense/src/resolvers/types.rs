@@ -173,6 +173,7 @@ pub struct ExpenseSubmissionHints {
     pub max_amount_per_claim: Option<String>,
     pub receipt_required: bool,
     pub limit_per_month: Option<String>,
+    pub limit_per_day: Option<String>,
 }
 
 impl From<kabipay_db_entities::tenant::d0033_travel_request::travel_request::Model> for TravelRequestDto {

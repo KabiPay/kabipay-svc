@@ -1,4 +1,5 @@
 //! Tenant-scoped SeaORM queries and commands for in-app notifications and announcements.
+//! **Outbound email/SMS** is not implemented here; see the crate **`README.md`** for the roadmap.
 
 use chrono::{DateTime, Utc};
 use kabipay_common::{KabiPayError, KabiPayResult};

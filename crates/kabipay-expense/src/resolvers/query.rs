@@ -120,6 +120,7 @@ impl QueryRoot {
             max_amount_per_claim: h.max_amount_per_claim.map(|d| d.to_string()),
             receipt_required: h.receipt_required,
             limit_per_month: h.limit_per_month.map(|d| d.to_string()),
+            limit_per_day: h.limit_per_day.map(|d| d.to_string()),
         })
     }
 

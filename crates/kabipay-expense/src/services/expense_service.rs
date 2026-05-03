@@ -364,6 +364,8 @@ fn policy_applies_to_employee(
 pub struct ExpenseSubmitConstraints {
     pub receipt_required: bool,
     pub max_amount_per_claim: Option<Decimal>,
+    /// Minimum non-zero **per-day** limit from the winning policy tier (informational; also folded into `max_amount_per_claim` when it tightens the single-claim ceiling).
+    pub limit_per_day: Option<Decimal>,
     pub limit_per_month: Option<Decimal>,
 }
 
@@ -408,6 +410,7 @@ pub async fn resolve_expense_submit_constraints(
         return Ok(ExpenseSubmitConstraints {
             receipt_required: false,
             max_amount_per_claim: category_max,
+            limit_per_day: None,
             limit_per_month: None,
         });
     }
@@ -435,6 +438,7 @@ pub async fn resolve_expense_submit_constraints(
         return Ok(ExpenseSubmitConstraints {
             receipt_required: false,
             max_amount_per_claim: category_max,
+            limit_per_day: None,
             limit_per_month: None,
         });
     }
@@ -461,9 +465,16 @@ pub async fn resolve_expense_submit_constraints(
         .collect();
     let limit_per_month = month_limits.into_iter().min();
 
+    let day_limits: Vec<Decimal> = tier_models
+        .iter()
+        .filter_map(|p| p.limit_per_day.filter(|v| *v > Decimal::ZERO))
+        .collect();
+    let limit_per_day = day_limits.into_iter().min();
+
     Ok(ExpenseSubmitConstraints {
         receipt_required,
         max_amount_per_claim,
+        limit_per_day,
         limit_per_month,
     })
 }
