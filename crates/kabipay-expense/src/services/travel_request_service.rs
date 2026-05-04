@@ -22,6 +22,95 @@ const STATUS_PENDING: &str = "PENDING";
 const STATUS_APPROVED: &str = "APPROVED";
 const STATUS_REJECTED: &str = "REJECTED";
 
+/// Configured `workflow_step.step_name` when **`PENDING`** and the linked instance is **`IN_PROGRESS`**.
+pub async fn resolve_travel_pending_approval_stage(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    status: &str,
+    workflow_instance_id: Option<Uuid>,
+) -> KabiPayResult<Option<String>> {
+    if status.trim().to_ascii_uppercase() != STATUS_PENDING {
+        return Ok(None);
+    }
+    let Some(inst_id) = workflow_instance_id else {
+        return Ok(None);
+    };
+    let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
+        .filter(workflow_instance::Column::TenantId.eq(tenant_id))
+        .one(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if inst.status.trim().to_ascii_uppercase() != WF_STATUS_IN_PROGRESS {
+        return Ok(None);
+    }
+    let Some(step) =
+        workflow_current_step::resolve_logical_current_workflow_step(db, tenant_id, &inst).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(step.step_name))
+}
+
+/// Whether **this** user may **approve**/**reject** travel right now (workflow step actor or non-workflow travel rules).
+pub async fn travel_viewer_may_approve(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    viewer_user_id: Uuid,
+    status: &str,
+    subject_employee_id: Uuid,
+    workflow_instance_id: Option<Uuid>,
+) -> KabiPayResult<bool> {
+    if status.trim().to_ascii_uppercase() != STATUS_PENDING {
+        return Ok(false);
+    }
+    match workflow_instance_id {
+        None => Ok(
+            workflow_approval::assert_travel_approval_actor(
+                db,
+                tenant_id,
+                viewer_user_id,
+                subject_employee_id,
+            )
+            .await
+            .is_ok(),
+        ),
+        Some(inst_id) => {
+            let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
+                .filter(workflow_instance::Column::TenantId.eq(tenant_id))
+                .one(db)
+                .await?
+            else {
+                return Ok(false);
+            };
+            if inst.status.trim().to_ascii_uppercase() != WF_STATUS_IN_PROGRESS {
+                return Ok(false);
+            }
+            let Some(step) = workflow_current_step::resolve_logical_current_workflow_step(
+                db,
+                tenant_id,
+                &inst,
+            )
+            .await?
+            else {
+                return Ok(false);
+            };
+            Ok(
+                workflow_approval::assert_workflow_step_actor(
+                    db,
+                    tenant_id,
+                    viewer_user_id,
+                    subject_employee_id,
+                    &step,
+                )
+                .await
+                .is_ok(),
+            )
+        }
+    }
+}
+
 /// Matches `workflow.entity_type` / `workflow_instance.entity_type` for travel (**M32**).
 pub const WF_ENTITY_TRAVEL_REQUEST: &str = "TRAVEL_REQUEST";
 

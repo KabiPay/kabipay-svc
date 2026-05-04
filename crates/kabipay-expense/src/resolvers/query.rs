@@ -18,7 +18,7 @@ use crate::resolvers::types::{
 use crate::services::{expense_service, travel_request_service};
 use uuid::Uuid;
 
-fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
+pub(crate) fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
         .map_err(|e| KabiPayError::Validation(format!("invalid {field}: {e}")).into_graphql())
 }

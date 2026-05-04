@@ -71,7 +71,8 @@ pub async fn read_stored_file_bytes(
     )))
 }
 
-/// Persist `bytes` to disk or object storage, then `file_storage` + `employee_document` (PENDING).
+/// Persist `bytes` to disk or object storage, then `file_storage` + `employee_document`.
+/// When `hr_auto_approve`, status is **`APPROVED`** and verifier timestamps use the uploader.
 pub async fn upload_employee_document(
     db: &DatabaseConnection,
     tenant_id: Uuid,
@@ -81,6 +82,7 @@ pub async fn upload_employee_document(
     original_filename: String,
     mime_type: Option<String>,
     bytes: Vec<u8>,
+    hr_auto_approve: bool,
 ) -> KabiPayResult<employee_document::Model> {
     if bytes.is_empty() {
         return Err(KabiPayError::Validation(
@@ -106,6 +108,7 @@ pub async fn upload_employee_document(
                 original_filename,
                 mime_type,
                 bytes,
+                hr_auto_approve,
             )
             .await
         }
@@ -150,6 +153,7 @@ pub async fn upload_employee_document(
                 Some(bucket),
                 storage_path,
                 sz,
+                hr_auto_approve,
             )
             .await
         }
@@ -169,6 +173,7 @@ async fn upload_local(
     original_filename: String,
     mime_type: Option<String>,
     bytes: Vec<u8>,
+    hr_auto_approve: bool,
 ) -> KabiPayResult<employee_document::Model> {
     let file_id = Uuid::new_v4();
     let doc_id = Uuid::new_v4();
@@ -199,6 +204,7 @@ async fn upload_local(
         None,
         rel,
         sz,
+        hr_auto_approve,
     )
     .await
 }
@@ -217,6 +223,7 @@ async fn insert_fs_doc(
     bucket: Option<String>,
     storage_path: String,
     size: i64,
+    hr_auto_approve: bool,
 ) -> KabiPayResult<employee_document::Model> {
     let provider = if bucket.is_some() {
         PROVIDER_S3_COMPAT.into()
@@ -241,18 +248,29 @@ async fn insert_fs_doc(
     };
     fs_am.insert(&txn).await.map_err(KabiPayError::from)?;
 
+    let (status, verified_by, verified_at): (String, Option<Uuid>, Option<chrono::DateTime<Utc>>) =
+        if hr_auto_approve {
+            (
+                "APPROVED".into(),
+                uploader_user_id,
+                Some(now),
+            )
+        } else {
+            ("PENDING".into(), None, None)
+        };
+
     let am = employee_document::ActiveModel {
         id: Set(doc_id),
         tenant_id: Set(tenant_id),
         employee_id: Set(employee_id),
         document_type_id: Set(document_type_id),
         file_storage_id: Set(Some(file_id)),
-        status: Set("PENDING".into()),
+        status: Set(status),
         expiry_date: Set(None),
         workflow_instance_id: Set(None),
         uploaded_at: Set(now),
-        verified_by: Set(None),
-        verified_at: Set(None),
+        verified_by: Set(verified_by),
+        verified_at: Set(verified_at),
         is_deleted: Set(false),
         deleted_at: Set(None),
         deleted_by: Set(None),

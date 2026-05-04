@@ -49,6 +49,27 @@ async fn resolve_first_step_without_approve_action(
     Ok(steps.into_iter().find(|s| !approved.contains(&s.id)))
 }
 
+/// Read-only: resolve which workflow step logically applies now (does **not** mutate the instance row).
+///
+/// Used for list/UI clarity and **`viewerMayApprove`** previews without writing on **GET**.
+/// Mutations continue to persist repair via [`ensure_workflow_instance_current_step_repaired`].
+pub async fn resolve_logical_current_workflow_step(
+    conn: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    inst: &workflow_instance::Model,
+) -> KabiPayResult<Option<workflow_step::Model>> {
+    if let Some(sid) = inst.current_step_id {
+        if let Some(step) = workflow_step::Entity::find_by_id(sid)
+            .filter(workflow_step::Column::TenantId.eq(tenant_id))
+            .one(conn)
+            .await?
+        {
+            return Ok(Some(step));
+        }
+    }
+    resolve_first_step_without_approve_action(conn, tenant_id, inst.id, inst.workflow_id).await
+}
+
 /// When **`current_step_id`** is **`NULL`** or points at a deleted step, set it to the next pending
 /// step derived from **`workflow_action`** history (first step without an **`APPROVE`** row).
 ///

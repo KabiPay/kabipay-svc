@@ -5,7 +5,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use uuid::Uuid;
 
 use crate::entities::d0006_org_hierarchy::{department, designation};
-use crate::entities::d0007_employee_core::{employee, employment_history};
+use crate::entities::d0007_employee_core::{
+    employee, employee_aadhaar, employee_bank, employee_pan, employment_history,
+};
 use crate::entities::d0008_document_system::{document_type, employee_document};
 use crate::entities::d0017_onboarding_offboarding::{
     clearance_checklist, fnf_settlement, onboarding_checklist, separation,
@@ -30,6 +32,18 @@ pub struct EmployeeDto {
     pub designation_id: Option<ID>,
     pub reporting_manager_id: Option<ID>,
     pub user_id: Option<ID>,
+    #[graphql(name = "dateOfBirth")]
+    pub date_of_birth: Option<NaiveDate>,
+    pub gender: Option<String>,
+    pub nationality: Option<String>,
+    #[graphql(name = "emergencyContactName")]
+    pub emergency_contact_name: Option<String>,
+    #[graphql(name = "emergencyContactPhone")]
+    pub emergency_contact_phone: Option<String>,
+    #[graphql(name = "emergencyContactRelation")]
+    pub emergency_contact_relation: Option<String>,
+    #[graphql(name = "bloodGroup")]
+    pub blood_group: Option<String>,
     /// Department display name when `department_id` is set (batch-resolved for directory queries).
     #[graphql(name = "departmentName")]
     pub department_name: Option<String>,
@@ -72,6 +86,100 @@ impl From<document_type::Model> for DocumentTypeDto {
     }
 }
 
+fn mask_pan_static(pan: &str) -> String {
+    let t = pan.trim().to_uppercase().replace(' ', "");
+    if t.len() < 5 {
+        return "••••".to_string();
+    }
+    format!(
+        "{}••••{}",
+        &t[..2],
+        &t[t.len().saturating_sub(4)..]
+    )
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "EmployeeBankAccount")]
+pub struct EmployeeBankAccountDto {
+    pub id: ID,
+    #[graphql(name = "bankName")]
+    pub bank_name: String,
+    #[graphql(name = "accountNumberMasked")]
+    pub account_number_masked: String,
+    #[graphql(name = "ifscCode")]
+    pub ifsc_code: String,
+    #[graphql(name = "accountType")]
+    pub account_type: Option<String>,
+    #[graphql(name = "isVerified")]
+    pub is_verified: bool,
+}
+
+impl EmployeeBankAccountDto {
+    pub fn from_model(m: &employee_bank::Model) -> Self {
+        let digits: String = m.account_number.chars().filter(|c| c.is_ascii_digit()).collect();
+        let masked = if digits.len() >= 4 {
+            format!("••••{}", &digits[digits.len().saturating_sub(4)..])
+        } else {
+            "••••".to_string()
+        };
+        Self {
+            id: ID(m.id.to_string()),
+            bank_name: m.bank_name.clone(),
+            account_number_masked: masked,
+            ifsc_code: m.ifsc_code.clone(),
+            account_type: m.account_type.clone(),
+            is_verified: m.is_verified,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "EmployeePanRecord")]
+pub struct EmployeePanRecordDto {
+    pub id: ID,
+    #[graphql(name = "maskedPan")]
+    pub masked_pan: String,
+    #[graphql(name = "isVerified")]
+    pub is_verified: bool,
+}
+
+impl EmployeePanRecordDto {
+    pub fn from_model(m: &employee_pan::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            masked_pan: mask_pan_static(&m.pan_number),
+            is_verified: m.is_verified,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "EmployeeAadhaarRecord")]
+pub struct EmployeeAadhaarRecordDto {
+    pub id: ID,
+    #[graphql(name = "maskedAadhaar")]
+    pub masked_aadhaar: String,
+    #[graphql(name = "isVerified")]
+    pub is_verified: bool,
+}
+
+impl EmployeeAadhaarRecordDto {
+    pub fn from_model(m: &employee_aadhaar::Model) -> Self {
+        Self {
+            id: ID(m.id.to_string()),
+            masked_aadhaar: format!("XXXX XXXX {}", m.aadhaar_last4.trim()),
+            is_verified: m.is_verified,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone, Debug)]
+#[graphql(name = "EmployeeIdentityProfile")]
+pub struct EmployeeIdentityProfileDto {
+    pub pan: Option<EmployeePanRecordDto>,
+    pub aadhaar: Option<EmployeeAadhaarRecordDto>,
+}
+
 #[derive(SimpleObject, Clone, Debug)]
 #[graphql(name = "EmployeeDocument")]
 pub struct EmployeeDocumentDto {
@@ -82,6 +190,14 @@ pub struct EmployeeDocumentDto {
     pub status: String,
     pub expiry_date: Option<NaiveDate>,
     pub uploaded_at: DateTime<Utc>,
+    #[graphql(name = "originalFileName")]
+    pub original_file_name: Option<String>,
+    #[graphql(name = "uploadedByUserId")]
+    pub uploaded_by_user_id: Option<ID>,
+    #[graphql(name = "documentTypeName")]
+    pub document_type_name: Option<String>,
+    #[graphql(name = "documentTypeCategory")]
+    pub document_type_category: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -96,9 +212,29 @@ impl From<employee_document::Model> for EmployeeDocumentDto {
             status: m.status,
             expiry_date: m.expiry_date,
             uploaded_at: m.uploaded_at,
+            original_file_name: None,
+            uploaded_by_user_id: None,
+            document_type_name: None,
+            document_type_category: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
+    }
+}
+
+impl EmployeeDocumentDto {
+    pub fn with_file_and_type(
+        mut self,
+        original_file_name: Option<String>,
+        uploaded_by_user_id: Option<Uuid>,
+        document_type_name: Option<String>,
+        document_type_category: Option<String>,
+    ) -> Self {
+        self.original_file_name = original_file_name;
+        self.uploaded_by_user_id = uploaded_by_user_id.map(|u| ID(u.to_string()));
+        self.document_type_name = document_type_name;
+        self.document_type_category = document_type_category;
+        self
     }
 }
 
@@ -218,6 +354,46 @@ pub struct UpdateEmployeeInput {
     pub employment_type: Option<String>,
     pub status: Option<String>,
     pub user_id: Option<ID>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpdateEmployeePersonalProfileInput {
+    pub employee_id: ID,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub date_of_birth: Option<NaiveDate>,
+    pub gender: Option<String>,
+    pub nationality: Option<String>,
+    #[graphql(name = "bloodGroup")]
+    pub blood_group: Option<String>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
+    pub emergency_contact_relation: Option<String>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertEmployeePrimaryBankInput {
+    pub employee_id: ID,
+    pub bank_name: String,
+    pub account_number: String,
+    pub ifsc_code: String,
+    pub account_type: Option<String>,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertEmployeePrimaryPanInput {
+    pub employee_id: ID,
+    /// 10-character Indian PAN (letters + digits), case-insensitive.
+    #[graphql(name = "panNumber")]
+    pub pan_number: String,
+}
+
+#[derive(InputObject, Clone, Debug)]
+pub struct UpsertEmployeePrimaryAadhaarInput {
+    pub employee_id: ID,
+    /// Last 4 digits, or full 12-digit number (spaces allowed); only last 4 are stored.
+    #[graphql(name = "aadhaarNumber")]
+    pub aadhaar_number: String,
 }
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -417,6 +593,13 @@ impl From<employee::Model> for EmployeeDto {
             designation_id: m.designation_id.map(|id| ID(id.to_string())),
             reporting_manager_id: m.reporting_manager_id.map(|id| ID(id.to_string())),
             user_id: m.user_id.map(|id| ID(id.to_string())),
+            date_of_birth: m.date_of_birth,
+            gender: m.gender,
+            nationality: m.nationality,
+            emergency_contact_name: m.emergency_contact_name,
+            emergency_contact_phone: m.emergency_contact_phone,
+            emergency_contact_relation: m.emergency_contact_relation,
+            blood_group: m.blood_group,
             department_name: None,
             designation_title: None,
             linked_user_email: None,

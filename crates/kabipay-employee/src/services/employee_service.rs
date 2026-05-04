@@ -390,3 +390,72 @@ pub async fn update(
         .await?
         .ok_or_else(|| KabiPayError::Internal("updated employee not found".into()))
 }
+
+/// Demographics + emergency contact (self-service or HR). Does not change org assignment.
+pub struct PersonalProfilePatch {
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub date_of_birth: Option<NaiveDate>,
+    pub gender: Option<String>,
+    pub nationality: Option<String>,
+    pub blood_group: Option<String>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
+    pub emergency_contact_relation: Option<String>,
+}
+
+pub async fn update_personal_profile(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    employee_id: Uuid,
+    patch: PersonalProfilePatch,
+) -> KabiPayResult<employee::Model> {
+    let existing = find_by_id(db, tenant_id, employee_id)
+        .await?
+        .ok_or_else(|| KabiPayError::NotFound {
+            entity: "employee",
+            id: employee_id.to_string(),
+        })?;
+    let mut am: employee::ActiveModel = existing.into();
+    if let Some(v) = patch.first_name {
+        let t = v.trim();
+        if t.is_empty() {
+            return Err(KabiPayError::Validation("firstName cannot be empty".into()));
+        }
+        am.first_name = Set(t.to_string());
+    }
+    if let Some(v) = patch.last_name {
+        let t = v.trim();
+        if t.is_empty() {
+            return Err(KabiPayError::Validation("lastName cannot be empty".into()));
+        }
+        am.last_name = Set(t.to_string());
+    }
+    if let Some(d) = patch.date_of_birth {
+        am.date_of_birth = Set(Some(d));
+    }
+    if let Some(g) = patch.gender {
+        am.gender = Set(Some(g));
+    }
+    if let Some(n) = patch.nationality {
+        am.nationality = Set(Some(n));
+    }
+    if let Some(bg) = patch.blood_group {
+        let t = bg.trim();
+        am.blood_group = Set(if t.is_empty() { None } else { Some(t.to_string()) });
+    }
+    if let Some(v) = patch.emergency_contact_name {
+        am.emergency_contact_name = Set(Some(v));
+    }
+    if let Some(v) = patch.emergency_contact_phone {
+        am.emergency_contact_phone = Set(Some(v));
+    }
+    if let Some(v) = patch.emergency_contact_relation {
+        am.emergency_contact_relation = Set(Some(v));
+    }
+    am.updated_at = Set(Utc::now());
+    am.update(db).await?;
+    find_by_id(db, tenant_id, employee_id)
+        .await?
+        .ok_or_else(|| KabiPayError::Internal("updated employee not found".into()))
+}

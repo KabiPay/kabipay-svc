@@ -11,8 +11,9 @@ use uuid::Uuid;
 
 use crate::resolvers::types::{
     ClearanceChecklistItemDto, DepartmentDto, DesignationDto, DocumentTypeDto,
-    EmploymentHistoryRecordDto, EmployeeDocumentDto,
-    EmployeeDto, FnfSettlementDto, OnboardingChecklistItemDto, OrgChartRowDto, SeparationDto,
+    EmployeeAadhaarRecordDto, EmployeeBankAccountDto, EmployeeDocumentDto, EmployeeDto,
+    EmployeeIdentityProfileDto, EmployeePanRecordDto, EmploymentHistoryRecordDto,
+    FnfSettlementDto, OnboardingChecklistItemDto, OrgChartRowDto, SeparationDto,
     TenantCatalogPermissionDto, TenantDirectoryRoleDto, TenantDirectoryUserDto,
     TenantPermissionScopeDto,
 };
@@ -25,7 +26,7 @@ use crate::resolvers::scope::{
 use crate::services::document_file_service::{self, download_claims};
 use crate::services::{
     document_service, employee_service, employment_history_service, offboarding_fnf_service,
-    onboarding_service, org_service, rbac_admin_service, separation_service,
+    onboarding_service, org_service, profile_extras_service, rbac_admin_service, separation_service,
 };
 use crate::entities::d0029_file_storage::file_storage;
 
@@ -71,7 +72,7 @@ impl QueryRoot {
     }
 
     /// Compensation rows driving payroll base salary (`employment_history`), newest first.
-    /// Requires **`employee:write`** or **`payroll:statutory_export`** (or HR / tenant admin role).
+    /// Allowed for **`employee:write`**, **`payroll:statutory_export`**, or the employee themself.
     async fn employment_history_records(
         &self,
         ctx: &Context<'_>,
@@ -79,19 +80,24 @@ impl QueryRoot {
         #[graphql(default = 24)] limit: u64,
     ) -> Result<Vec<EmploymentHistoryRecordDto>> {
         let claims = require_client_claims(ctx)?;
-        if !claims.can_manage_employee_directory() && !claims.can_export_payroll_statutory() {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let viewer_eid = resolve_client_employee_id(ctx, &db, tenant_id).await.ok();
+        let is_self = viewer_eid == Some(eid);
+        if !claims.can_manage_employee_directory()
+            && !claims.can_export_payroll_statutory()
+            && !is_self
+        {
             return Err(
                 KabiPayError::Forbidden(
-                    "employment history requires employee:write or payroll:statutory_export (or HR admin)"
+                    "employment history requires employee:write, payroll export permission, or your own employee id"
                         .into(),
                 )
                 .into_graphql(),
             );
         }
-        let tenant_id = require_tenant_id(ctx)?;
-        let db = tenant_db(ctx, tenant_id).await?;
-        let eid = parse_uuid(&employee_id, "employeeId")?;
-        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
         let rows = employment_history_service::list_for_employee(&db, tenant_id, eid, limit)
             .await
             .map_err(KabiPayError::into_graphql)?;
@@ -133,10 +139,70 @@ impl QueryRoot {
         let rows = document_service::list_employee_documents(&db, tenant_id, emp, limit)
             .await
             .map_err(KabiPayError::into_graphql)?;
-        Ok(rows.into_iter().map(EmployeeDocumentDto::from).collect())
+        let mut fs_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.file_storage_id).collect();
+        fs_ids.sort_unstable();
+        fs_ids.dedup();
+        let mut dt_ids: Vec<Uuid> = rows.iter().map(|r| r.document_type_id).collect();
+        dt_ids.sort_unstable();
+        dt_ids.dedup();
+        let fs_map = document_service::map_file_storage_rows(&db, tenant_id, &fs_ids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let dt_map = document_service::map_document_type_rows(&db, tenant_id, &dt_ids)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| {
+                let fs = m.file_storage_id.and_then(|id| fs_map.get(&id));
+                let dt = dt_map.get(&m.document_type_id);
+                EmployeeDocumentDto::from(m).with_file_and_type(
+                    fs.and_then(|f| f.original_filename.clone()),
+                    fs.and_then(|f| f.uploaded_by),
+                    dt.map(|d| d.name.clone()),
+                    dt.and_then(|d| d.category.clone()),
+                )
+            })
+            .collect())
     }
 
-    /// Departments in the tenant (org hierarchy). Excludes soft-deleted rows.
+    /// Primary bank account for payroll (masked account number in API).
+    async fn employee_primary_bank(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: ID,
+    ) -> Result<Option<EmployeeBankAccountDto>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let row = profile_extras_service::find_primary_bank(&db, tenant_id, eid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(row.as_ref().map(EmployeeBankAccountDto::from_model))
+    }
+
+    /// Masked PAN / Aadhaar primary rows for the employee profile.
+    async fn employee_identity_profile(
+        &self,
+        ctx: &Context<'_>,
+        employee_id: ID,
+    ) -> Result<EmployeeIdentityProfileDto> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let pan = profile_extras_service::find_primary_pan(&db, tenant_id, eid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let aadhaar = profile_extras_service::find_primary_aadhaar(&db, tenant_id, eid)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        Ok(EmployeeIdentityProfileDto {
+            pan: pan.as_ref().map(EmployeePanRecordDto::from_model),
+            aadhaar: aadhaar.as_ref().map(EmployeeAadhaarRecordDto::from_model),
+        })
+    }
     async fn departments(
         &self,
         ctx: &Context<'_>,
@@ -520,7 +586,7 @@ async fn resolve_employee_dto(ctx: &Context<'_>, id: ID) -> Result<Option<Employ
     })
 }
 
-async fn enrich_employee_dtos(
+pub(crate) async fn enrich_employee_dtos(
     db: &DatabaseConnection,
     tenant_id: Uuid,
     dtos: Vec<EmployeeDto>,

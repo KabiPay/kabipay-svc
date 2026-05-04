@@ -1,7 +1,14 @@
 //! GraphQL DTOs for kabipay-expense.
 
-use async_graphql::{InputObject, SimpleObject, ID};
+use async_graphql::{ComplexObject, Context, InputObject, Result, SimpleObject, ID};
+use kabipay_common::{
+    subgraph::{require_client_claims, require_tenant_id, tenant_db},
+    KabiPayError,
+};
 use chrono::{DateTime, NaiveDate, Utc};
+
+use crate::resolvers::query::parse_uuid;
+use crate::services::{expense_service, travel_request_service};
 use kabipay_db_entities::tenant::d0015_expense::{expense, expense_category, expense_policy};
 
 #[derive(SimpleObject, Clone, Debug)]
@@ -31,6 +38,7 @@ impl From<expense_category::Model> for ExpenseCategoryDto {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(complex)]
 #[graphql(name = "Expense")]
 pub struct ExpenseDto {
     pub id: ID,
@@ -69,6 +77,7 @@ pub struct SubmitExpenseInput {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(complex)]
 #[graphql(name = "TravelRequest")]
 pub struct TravelRequestDto {
     pub id: ID,
@@ -196,6 +205,82 @@ impl From<kabipay_db_entities::tenant::d0033_travel_request::travel_request::Mod
             workflow_instance_id: m.workflow_instance_id.map(|u| ID(u.to_string())),
             submitted_at: m.submitted_at,
         }
+    }
+}
+
+#[ComplexObject]
+impl ExpenseDto {
+    async fn pending_approval_stage(&self, ctx: &Context<'_>) -> Result<Option<String>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        expense_service::resolve_expense_pending_approval_stage(&db, tenant_id, &self.status, wf)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn viewer_may_approve(&self, ctx: &Context<'_>) -> Result<bool> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let claims = require_client_claims(ctx)?;
+        let employee_id = parse_uuid(&self.employee_id, "employeeId")?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        expense_service::expense_viewer_may_approve(
+            &db,
+            tenant_id,
+            claims.sub,
+            &self.status,
+            employee_id,
+            wf,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)
+    }
+}
+
+#[ComplexObject]
+impl TravelRequestDto {
+    async fn pending_approval_stage(&self, ctx: &Context<'_>) -> Result<Option<String>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        travel_request_service::resolve_travel_pending_approval_stage(&db, tenant_id, &self.status, wf)
+            .await
+            .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn viewer_may_approve(&self, ctx: &Context<'_>) -> Result<bool> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let claims = require_client_claims(ctx)?;
+        let employee_id = parse_uuid(&self.employee_id, "employeeId")?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        travel_request_service::travel_viewer_may_approve(
+            &db,
+            tenant_id,
+            claims.sub,
+            &self.status,
+            employee_id,
+            wf,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)
     }
 }
 

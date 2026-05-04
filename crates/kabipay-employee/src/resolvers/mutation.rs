@@ -10,27 +10,62 @@ use kabipay_common::{
 };
 use uuid::Uuid;
 
+use crate::resolvers::query::enrich_employee_dtos;
 use crate::resolvers::scope::{assert_employee_in_data_scope, require_tenant_rbac_admin};
 use crate::resolvers::types::{
-    ClearanceChecklistItemDto, CreateEmployeeInput, EmployeeDocumentDto, EmployeeDto,
-    EmploymentHistoryRecordDto, FnfSettlementDto, OnboardingChecklistItemDto, SeparationDto,
+    ClearanceChecklistItemDto, CreateEmployeeInput, EmployeeAadhaarRecordDto, EmployeeBankAccountDto,
+    EmployeeDocumentDto, EmployeeDto, EmployeePanRecordDto, EmploymentHistoryRecordDto,
+    FnfSettlementDto, OnboardingChecklistItemDto, PermissionScopeAssignmentInput, SeparationDto,
     SetEmployeeCompensationInput, SubmitSeparationInput, UpdateEmployeeInput,
-    UploadEmployeeDocumentInput, UpsertFnfSettlementInput, PermissionScopeAssignmentInput,
+    UpdateEmployeePersonalProfileInput, UploadEmployeeDocumentInput, UpsertEmployeePrimaryAadhaarInput,
+    UpsertEmployeePrimaryBankInput, UpsertEmployeePrimaryPanInput, UpsertFnfSettlementInput,
 };
 use crate::services::document_file_service;
-use crate::services::employee_service::{self, EmployeePatch, NewEmployee};
+use crate::services::employee_service::{self, EmployeePatch, NewEmployee, PersonalProfilePatch};
 use crate::services::employment_history_service;
 use crate::services::offboarding_fnf_service;
 use crate::services::onboarding_service;
+use crate::services::profile_extras_service;
 use crate::services::rbac_admin_service;
 use crate::services::separation_service;
+use crate::services::document_service;
 use rust_decimal::Decimal;
 
-use crate::entities::d0008_document_system::document_type;
+use crate::entities::d0008_document_system::{document_type, employee_document};
 use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+
+async fn enrich_employee_document_dto(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    m: employee_document::Model,
+) -> Result<EmployeeDocumentDto> {
+    let dto = EmployeeDocumentDto::from(m.clone());
+    let (ofn, ub) = if let Some(fid) = m.file_storage_id {
+        let map = document_service::map_file_storage_rows(db, tenant_id, &[fid])
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let fs = map.get(&fid);
+        (
+            fs.and_then(|f| f.original_filename.clone()),
+            fs.and_then(|f| f.uploaded_by),
+        )
+    } else {
+        (None, None)
+    };
+    let dt_map = document_service::map_document_type_rows(db, tenant_id, &[m.document_type_id])
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+    let dt = dt_map.get(&m.document_type_id);
+    Ok(dto.with_file_and_type(
+        ofn,
+        ub,
+        dt.map(|d| d.name.clone()),
+        dt.and_then(|d| d.category.clone()),
+    ))
+}
 
 fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
@@ -191,9 +226,8 @@ impl MutationRoot {
         Ok(EmploymentHistoryRecordDto::from(m))
     }
 
-    /// Upload a file to local `KABIPAY_LOCAL_FILE_ROOT` and attach an `employee_document` row
-    /// (`PENDING`). Caller must be in the same `employee` data scope as the target (self / team / dept
-    /// / all), or set **dev** `KABIPAY_EMPLOYEE_MUTATION_HEADER_OK=1` for unauthenticated `x-tenant-id`.
+    /// Upload a file to local `KABIPAY_LOCAL_FILE_ROOT` or object storage and attach `employee_document`.
+    /// **Directory/HR** uploads are **`APPROVED`** immediately; others start **`PENDING`** for HR review.
     async fn upload_employee_document(
         &self,
         ctx: &Context<'_>,
@@ -228,6 +262,11 @@ impl MutationRoot {
             return Err(KabiPayError::Unauthorised.into_graphql());
         };
 
+        let hr_auto = ctx
+            .data_opt::<ClientClaims>()
+            .map(|c| c.can_manage_employee_directory())
+            .unwrap_or(false);
+
         let bytes = STANDARD
             .decode(input.content_base64.as_bytes())
             .map_err(|e| KabiPayError::Validation(format!("contentBase64: {e}")).into_graphql())?;
@@ -241,10 +280,178 @@ impl MutationRoot {
             input.file_name,
             input.mime_type,
             bytes,
+            hr_auto,
         )
         .await
         .map_err(KabiPayError::into_graphql)?;
-        Ok(EmployeeDocumentDto::from(m))
+        enrich_employee_document_dto(&db, tenant_id, m).await
+    }
+
+    /// Demographics + emergency contact. Employee may edit **self**; HR may edit anyone in scope.
+    async fn update_employee_personal_profile(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateEmployeePersonalProfileInput,
+    ) -> Result<EmployeeDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&input.employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let viewer = resolve_client_employee_id(ctx, &db, tenant_id).await.ok();
+        if viewer != Some(eid) && !claims.can_manage_employee_directory() {
+            return Err(KabiPayError::Forbidden(
+                "use your own employee id or employee:write to update another profile".into(),
+            )
+            .into_graphql());
+        }
+        let patch = PersonalProfilePatch {
+            first_name: input.first_name,
+            last_name: input.last_name,
+            date_of_birth: input.date_of_birth,
+            gender: input.gender,
+            nationality: input.nationality,
+            blood_group: input.blood_group,
+            emergency_contact_name: input.emergency_contact_name,
+            emergency_contact_phone: input.emergency_contact_phone,
+            emergency_contact_relation: input.emergency_contact_relation,
+        };
+        let m = employee_service::update_personal_profile(&db, tenant_id, eid, patch)
+            .await
+            .map_err(KabiPayError::into_graphql)?;
+        let dto = EmployeeDto::from(m);
+        let mut enriched = enrich_employee_dtos(&db, tenant_id, vec![dto]).await?;
+        enriched.pop().ok_or_else(|| {
+            KabiPayError::Internal("failed to enrich employee dto".into()).into_graphql()
+        })
+    }
+
+    /// Upsert the primary bank row (self or **`employee:write`**).
+    async fn upsert_employee_primary_bank(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertEmployeePrimaryBankInput,
+    ) -> Result<EmployeeBankAccountDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&input.employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let viewer = resolve_client_employee_id(ctx, &db, tenant_id).await.ok();
+        if viewer != Some(eid) && !claims.can_manage_employee_directory() {
+            return Err(KabiPayError::Forbidden(
+                "use your own employee id or employee:write".into(),
+            )
+            .into_graphql());
+        }
+        let m = profile_extras_service::upsert_primary_bank(
+            &db,
+            tenant_id,
+            eid,
+            input.bank_name,
+            input.account_number,
+            input.ifsc_code,
+            input.account_type,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(EmployeeBankAccountDto::from_model(&m))
+    }
+
+    /// Upsert primary PAN (self or **`employee:write`**). Clears verification until HR re-verifies.
+    async fn upsert_employee_primary_pan(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertEmployeePrimaryPanInput,
+    ) -> Result<EmployeePanRecordDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&input.employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let viewer = resolve_client_employee_id(ctx, &db, tenant_id).await.ok();
+        if viewer != Some(eid) && !claims.can_manage_employee_directory() {
+            return Err(KabiPayError::Forbidden(
+                "use your own employee id or employee:write".into(),
+            )
+            .into_graphql());
+        }
+        let m = profile_extras_service::upsert_primary_pan(
+            &db,
+            tenant_id,
+            eid,
+            input.pan_number,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(EmployeePanRecordDto::from_model(&m))
+    }
+
+    /// Upsert primary Aadhaar last‑4 (self or **`employee:write`**). Clears verification.
+    async fn upsert_employee_primary_aadhaar(
+        &self,
+        ctx: &Context<'_>,
+        input: UpsertEmployeePrimaryAadhaarInput,
+    ) -> Result<EmployeeAadhaarRecordDto> {
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let eid = parse_uuid(&input.employee_id, "employeeId")?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, eid).await?;
+        let viewer = resolve_client_employee_id(ctx, &db, tenant_id).await.ok();
+        if viewer != Some(eid) && !claims.can_manage_employee_directory() {
+            return Err(KabiPayError::Forbidden(
+                "use your own employee id or employee:write".into(),
+            )
+            .into_graphql());
+        }
+        let m = profile_extras_service::upsert_primary_aadhaar(
+            &db,
+            tenant_id,
+            eid,
+            input.aadhaar_number,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        Ok(EmployeeAadhaarRecordDto::from_model(&m))
+    }
+
+    /// HR: approve or reject a **`PENDING`** employee document.
+    async fn resolve_employee_document(
+        &self,
+        ctx: &Context<'_>,
+        employee_document_id: ID,
+        approved: bool,
+    ) -> Result<EmployeeDocumentDto> {
+        require_employee_mutation_rbac(ctx)?;
+        let claims = require_client_claims(ctx)?;
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let doc_id = parse_uuid(&employee_document_id, "employeeDocumentId")?;
+        let existing = employee_document::Entity::find_by_id(doc_id)
+            .filter(employee_document::Column::TenantId.eq(tenant_id))
+            .filter(employee_document::Column::IsDeleted.eq(false))
+            .one(&db)
+            .await
+            .map_err(|e: sea_orm::DbErr| KabiPayError::from(e).into_graphql())?
+            .ok_or_else(|| {
+                KabiPayError::NotFound {
+                    entity: "employeeDocument",
+                    id: doc_id.to_string(),
+                }
+                .into_graphql()
+            })?;
+        assert_employee_in_data_scope(ctx, &db, tenant_id, existing.employee_id).await?;
+        let m = document_service::resolve_employee_document_status(
+            &db,
+            tenant_id,
+            doc_id,
+            approved,
+            claims.sub,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)?;
+        enrich_employee_document_dto(&db, tenant_id, m).await
     }
 
     /// Mark an onboarding checklist row complete or incomplete. Employees may update **their own**
