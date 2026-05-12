@@ -35,7 +35,7 @@ use crate::entities::d0008_document_system::{document_type, employee_document};
 use crate::entities::d0017_onboarding_offboarding::onboarding_checklist;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, TransactionTrait};
 
 async fn enrich_employee_document_dto(
     db: &DatabaseConnection,
@@ -146,6 +146,22 @@ impl MutationRoot {
         require_employee_mutation_rbac(ctx)?;
         let tenant_id = require_tenant_id(ctx)?;
         let db = tenant_db(ctx, tenant_id).await?;
+
+        let explicit_user_id = opt_uuid(&input.user_id, "userId")?;
+        let login_email_raw = input
+            .login_email
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+
+        if explicit_user_id.is_some() && login_email_raw.is_some() {
+            return Err(
+                KabiPayError::Validation("provide either userId or loginEmail, not both".into())
+                    .into_graphql(),
+            );
+        }
+
         let data = NewEmployee {
             employee_code: input.employee_code,
             first_name: input.first_name,
@@ -159,11 +175,34 @@ impl MutationRoot {
                 .status
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "ACTIVE".into()),
-            user_id: opt_uuid(&input.user_id, "userId")?,
+            user_id: explicit_user_id,
         };
-        let m = employee_service::create(&db, tenant_id, data)
-            .await
-            .map_err(KabiPayError::into_graphql)?;
+
+        let m = if let Some(email) = login_email_raw {
+            let txn = db.begin().await.map_err(KabiPayError::from)?;
+            let uid = match employee_service::create_provisional_login_user(&txn, tenant_id, &email).await {
+                Ok(u) => u,
+                Err(e) => {
+                    let _ = txn.rollback().await;
+                    return Err(KabiPayError::into_graphql(e));
+                }
+            };
+            let mut data = data;
+            data.user_id = Some(uid);
+            let created = match employee_service::create(&txn, tenant_id, data).await {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = txn.rollback().await;
+                    return Err(KabiPayError::into_graphql(e));
+                }
+            };
+            txn.commit().await.map_err(KabiPayError::from)?;
+            created
+        } else {
+            employee_service::create(&db, tenant_id, data)
+                .await
+                .map_err(KabiPayError::into_graphql)?
+        };
         Ok(EmployeeDto::from(m))
     }
 

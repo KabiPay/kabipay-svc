@@ -213,17 +213,17 @@ pub async fn resolved_employer_placeholders_for_exports(
         .map_err(KabiPayError::from)?;
     let tan = row
         .as_ref()
-        .and_then(|r| r.employer_tan.as_ref())
+        .and_then(|r| r.employer_tan.as_deref())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|s| s.to_string())
         .unwrap_or_else(payroll_export_employer_tan_env);
     let legal = row
         .as_ref()
-        .and_then(|r| r.employer_legal_name.as_ref())
+        .and_then(|r| r.employer_legal_name.as_deref())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|s| s.to_string())
         .unwrap_or_else(payroll_export_employer_legal_name_env);
     Ok((tan, legal))
 }

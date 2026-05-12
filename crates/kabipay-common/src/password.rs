@@ -1,14 +1,11 @@
-//! Password hashing with argon2id.
-//!
-//! Never store plaintext passwords. `hash()` returns a PHC-format string
-//! (`$argon2id$v=19$m=...,t=...,p=...$<salt>$<hash>`). `verify()` parses the stored
-//! string and checks the supplied password against it.
+//! Password hashing with argon2id (tenant user login verification uses this format).
 
 use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
 };
 use argon2::Argon2;
-use kabipay_common::error::{KabiPayError, KabiPayResult};
+
+use crate::error::{KabiPayError, KabiPayResult};
 
 /// Hash a plaintext password. Pass the returned string directly into the DB.
 pub fn hash(plaintext: &str) -> KabiPayResult<String> {

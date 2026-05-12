@@ -1,0 +1,6 @@
+# Default to one rustc job so `target/` is not hammered by parallel crate builds.
+# Fixes intermittent Windows failures: E0463 "can't find crate", "required in rlib format",
+# when Rust Analyzer / another terminal also runs Cargo or antivirus delays writes.
+# Override when you want speed: cargo build --workspace -j 8
+[build]
+jobs = 1

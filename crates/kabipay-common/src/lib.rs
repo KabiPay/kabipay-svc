@@ -20,6 +20,7 @@ pub mod ids;
 pub mod jwt;
 pub mod middleware;
 pub mod pagination;
+pub mod password;
 pub mod subgraph;
 pub mod telemetry;
 pub mod tenant_seed;

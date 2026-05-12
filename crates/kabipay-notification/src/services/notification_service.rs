@@ -61,7 +61,8 @@ pub fn announcement_visible_to_viewer(
         return true;
     }
     if let Some(ref ta) = m.target_audience {
-        let t = ta.trim();
+        // `String::trim` on `&String` — avoid `as_str()` here (can confuse inference when deps fail mid-build).
+        let t: &str = ta.trim();
         let upper = t.to_ascii_uppercase();
         if upper.starts_with("ROLE:") {
             let need = t[5..].trim().to_ascii_uppercase();

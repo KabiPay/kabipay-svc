@@ -28,6 +28,7 @@ use kabipay_common::{
     db::resolve_tenant_db,
     error::{KabiPayError, KabiPayResult},
     jwt::{decode_client_jwt, extract_bearer},
+    password,
 };
 use kabipay_db_entities::{
     ops::{operator_session, operator_user},
@@ -40,7 +41,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{jwt::JwtConfig, not_implemented, password, rbac, state::AppState, tokens};
+use crate::{jwt::JwtConfig, not_implemented, rbac, state::AppState, tokens};
 
 // ---------------------------------------------------------------------------
 // DTOs

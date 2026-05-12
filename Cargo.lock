@@ -1756,6 +1756,7 @@ name = "kabipay-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-graphql",
  "async-graphql-axum",
  "axum",

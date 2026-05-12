@@ -67,7 +67,7 @@ pub async fn store_blob(
             let cfg = S3CompatSettings::from_env()?;
             let file_id = Uuid::new_v4();
             let now = Utc::now();
-            let (bucket, storage_path) = if cfg.per_tenant_bucket {
+            let (bucket, storage_path): (String, String) = if cfg.per_tenant_bucket {
                 let b = tenant_bucket_name(tenant_id, &cfg.bucket_prefix);
                 ensure_tenant_bucket(&cfg, &b).await?;
                 (b, file_id.to_string())

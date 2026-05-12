@@ -340,6 +340,12 @@ pub struct CreateEmployeeInput {
     /// Defaults to `ACTIVE` when omitted.
     pub status: Option<String>,
     pub user_id: Option<ID>,
+    /// When set, creates a tenant login with a provisional password (`ChangeMe!123`). Cannot be combined with `userId`.
+    ///
+    /// TODO(invite-flow): Replace provisional password + optional DEMO_STAFF assignment with email invite,
+    /// magic-link enrolment, or admin-triggered reset-password flow (see `employee_service::create_provisional_login_user`).
+    #[graphql(name = "loginEmail")]
+    pub login_email: Option<String>,
 }
 
 #[derive(InputObject, Clone, Debug)]

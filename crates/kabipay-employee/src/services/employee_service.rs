@@ -8,18 +8,89 @@ use kabipay_common::client_data_scope::employee_model_in_scope;
 use kabipay_common::context::ClientViewerEmployee;
 use kabipay_common::context::ScopeType;
 use kabipay_common::{KabiPayError, KabiPayResult};
+use kabipay_db_entities::tenant::d0005_auth_rbac::{role, user, user_role};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set,
 };
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::entities::d0007_employee_core::employee;
 
+/// TODO(invite-flow): Remove this provisional bootstrap password once enrolment uses invite links or an admin/API reset flow.
+pub(crate) const DEFAULT_NEW_EMPLOYEE_LOGIN_PASSWORD: &str = "ChangeMe!123";
+
+/// Creates `user` (+ optional `user_role` for `DEMO_STAFF` when that role exists). Caller should run inside a transaction with `employee::create`.
+///
+/// TODO(invite-flow): Replace with invite-only signup, OTP, or forced password reset on first login — never ship static passwords for production tenants.
+pub async fn create_provisional_login_user<C: ConnectionTrait>(
+    db: &C,
+    tenant_id: Uuid,
+    login_email: &str,
+) -> KabiPayResult<Uuid> {
+    let email = login_email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
+        return Err(KabiPayError::Validation(
+            "loginEmail must be a valid email address".into(),
+        ));
+    }
+    if user::Entity::find()
+        .filter(user::Column::TenantId.eq(tenant_id))
+        .filter(user::Column::Email.eq(&email))
+        .filter(user::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+        .is_some()
+    {
+        return Err(KabiPayError::Conflict(format!(
+            "a user with email {email} already exists in this tenant"
+        )));
+    }
+
+    let password_hash = kabipay_common::password::hash(DEFAULT_NEW_EMPLOYEE_LOGIN_PASSWORD)?;
+    let user_id = Uuid::new_v4();
+    let now = Utc::now();
+    user::ActiveModel {
+        id: Set(user_id),
+        tenant_id: Set(tenant_id),
+        email: Set(email),
+        password_hash: Set(password_hash),
+        is_active: Set(true),
+        mfa_enabled: Set(false),
+        mfa_secret: Set(None),
+        last_login_at: Set(None),
+        is_deleted: Set(false),
+        deleted_at: Set(None),
+        deleted_by: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    }
+    .insert(db)
+    .await?;
+
+    if let Some(role_row) = role::Entity::find()
+        .filter(role::Column::TenantId.eq(tenant_id))
+        .filter(role::Column::Name.eq("DEMO_STAFF"))
+        .filter(role::Column::IsDeleted.eq(false))
+        .one(db)
+        .await?
+    {
+        user_role::ActiveModel {
+            user_id: Set(user_id),
+            role_id: Set(role_row.id),
+            assigned_at: Set(now),
+        }
+        .insert(db)
+        .await?;
+    }
+
+    Ok(user_id)
+}
+
 /// `new_manager` must exist, differ from `subject_employee_id`, and must not create a reporting loop.
-pub async fn assert_valid_reporting_manager(
-    db: &DatabaseConnection,
+pub async fn assert_valid_reporting_manager<C: ConnectionTrait>(
+    db: &C,
     tenant_id: Uuid,
     subject_employee_id: Uuid,
     new_manager_id: Uuid,
@@ -58,8 +129,8 @@ pub async fn assert_valid_reporting_manager(
 ///
 /// Returns `Ok(None)` when the employee is not found (or is soft-deleted / belongs
 /// to another tenant) so the resolver can render a nullable `Employee`.
-pub async fn find_by_id(
-    db: &DatabaseConnection,
+pub async fn find_by_id<C: ConnectionTrait>(
+    db: &C,
     tenant_id: Uuid,
     employee_id: Uuid,
 ) -> KabiPayResult<Option<employee::Model>> {
@@ -265,8 +336,8 @@ pub struct NewEmployee {
     pub user_id: Option<Uuid>,
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
+pub async fn create<C: ConnectionTrait>(
+    db: &C,
     tenant_id: Uuid,
     data: NewEmployee,
 ) -> KabiPayResult<employee::Model> {

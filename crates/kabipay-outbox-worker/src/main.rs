@@ -15,8 +15,10 @@ use kabipay_db_entities::tenant::d0030_outbox_events::outbox_event;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
-    FromQueryResult, QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
+    QueryFilter, QueryOrder, Set, Statement, TransactionTrait,
 };
+// `sea_orm::FromQueryResult` at crate root is the derive macro (shadows the trait). Import the trait explicitly for `find_by_statement`.
+use sea_orm::entity::FromQueryResult;
 use serde_json::json;
 use sha2::Sha256;
 use std::collections::HashSet;
@@ -30,7 +32,7 @@ const STATUS_PROCESSING: &str = "PROCESSING";
 const STATUS_PROCESSED: &str = "PROCESSED";
 const STATUS_FAILED: &str = "FAILED";
 
-#[derive(Debug, FromQueryResult)]
+#[derive(Debug, sea_orm::FromQueryResult)]
 struct PickId {
     id: Uuid,
 }
