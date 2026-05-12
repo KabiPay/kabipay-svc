@@ -74,6 +74,10 @@ pub async fn user_has_permission_via_roles(
     Ok(false)
 }
 
+/// Matched on [`KabiPayError::Forbidden`] for ROLE-only workflow steps when merging timesheet approval.
+pub const WORKFLOW_ERR_ROLE_REQUIRED: &str =
+    "your account is not assigned the role required for this approval step";
+
 async fn assert_is_reporting_manager_user(
     conn: &impl ConnectionTrait,
     tenant_id: Uuid,
@@ -134,9 +138,7 @@ async fn assert_user_has_role(
         .one(conn)
         .await?
         .ok_or_else(|| {
-            KabiPayError::Forbidden(
-                "your account is not assigned the role required for this approval step".into(),
-            )
+            KabiPayError::Forbidden(WORKFLOW_ERR_ROLE_REQUIRED.into())
         })?;
     Ok(())
 }
@@ -170,6 +172,41 @@ async fn assert_reporting_manager_or_fallback_role(
         "only the employee's reporting manager or the workflow fallback role (e.g. HR admin) may approve or reject at this step"
             .into(),
     ))
+}
+
+/// Like [`assert_workflow_step_actor`], but for **timesheet week batches** only: if the step is
+/// ROLE-only (typical HR second gate) and the approver is not in that role, still allow the
+/// subject employee's **reporting manager** (linked `employee.user_id`) to act. This keeps
+/// line-manager approval working without a separate HR-only click when the workflow still lists
+/// HR as a ROLE step; HR and other assignees still satisfy the primary ROLE check.
+pub async fn assert_workflow_step_actor_with_timesheet_reporting_manager_fallback(
+    conn: &impl ConnectionTrait,
+    tenant_id: Uuid,
+    approver_user_id: Uuid,
+    subject_employee_id: Uuid,
+    step: &workflow_step::Model,
+) -> KabiPayResult<()> {
+    match assert_workflow_step_actor(
+        conn,
+        tenant_id,
+        approver_user_id,
+        subject_employee_id,
+        step,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(KabiPayError::Forbidden(msg)) if msg.contains(WORKFLOW_ERR_ROLE_REQUIRED) => {
+            assert_is_reporting_manager_user(
+                conn,
+                tenant_id,
+                approver_user_id,
+                subject_employee_id,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Ensures `approver_user_id` may act on `step` for requests from `subject_employee_id`.

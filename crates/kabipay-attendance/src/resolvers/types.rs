@@ -1,13 +1,18 @@
 //! GraphQL DTOs for kabipay-attendance.
 
-use async_graphql::{InputObject, SimpleObject, ID};
+use async_graphql::{ComplexObject, Context, InputObject, Result, SimpleObject, ID};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use kabipay_common::subgraph::{require_client_claims, require_tenant_id, tenant_db};
+use kabipay_common::KabiPayError;
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{
     attendance, holiday, holiday_calendar, shift, timesheet_entry, timesheet_week_batch,
 };
 use kabipay_db_entities::tenant::d0032_attendance_punch_policy::attendance_punch_policy;
 use rust_decimal::prelude::ToPrimitive;
 use uuid::Uuid;
+
+use crate::resolvers::query::parse_uuid;
+use crate::services::timesheet_batch_service;
 
 use crate::services::attendance_service::PunchDaySummary;
 
@@ -105,6 +110,7 @@ pub struct HolidayEntryDto {
 }
 
 #[derive(SimpleObject, Clone, Debug)]
+#[graphql(complex)]
 #[graphql(name = "TimesheetWeekBatch")]
 pub struct TimesheetWeekBatchDto {
     pub id: ID,
@@ -129,6 +135,46 @@ impl From<timesheet_week_batch::Model> for TimesheetWeekBatchDto {
             submitted_at: m.submitted_at,
             rejection_reason: m.rejection_reason,
         }
+    }
+}
+
+#[ComplexObject]
+impl TimesheetWeekBatchDto {
+    async fn pending_approval_stage(&self, ctx: &Context<'_>) -> Result<Option<String>> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        timesheet_batch_service::resolve_timesheet_pending_approval_stage(
+            &db, tenant_id, &self.status, wf,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)
+    }
+
+    async fn viewer_may_approve(&self, ctx: &Context<'_>) -> Result<bool> {
+        let tenant_id = require_tenant_id(ctx)?;
+        let db = tenant_db(ctx, tenant_id).await?;
+        let claims = require_client_claims(ctx)?;
+        let employee_id = parse_uuid(&self.employee_id, "employeeId")?;
+        let wf = self
+            .workflow_instance_id
+            .as_ref()
+            .map(|id| parse_uuid(id, "workflowInstanceId"))
+            .transpose()?;
+        timesheet_batch_service::timesheet_week_batch_viewer_may_approve(
+            &db,
+            tenant_id,
+            claims.sub,
+            &self.status,
+            employee_id,
+            wf,
+        )
+        .await
+        .map_err(KabiPayError::into_graphql)
     }
 }
 

@@ -59,8 +59,10 @@ pub const SCOPE_RES_EMPLOYEE: &str = "employee";
 pub const SCOPE_RES_LEAVE: &str = "leave";
 /// Expense claims — list/filter scope (M10); align `permission_scope.resource`.
 pub const SCOPE_RES_EXPENSE: &str = "expense";
-/// Attendance + timesheet rows — list/filter scope (M10).
+/// Attendance punches, regularization lists, **`timesheet_entry`** rows — `permission_scope.resource`.
 pub const SCOPE_RES_ATTENDANCE: &str = "attendance";
+/// **`timesheet_week_batches`** approval queue — must match `permission_scope` seeds (`timesheet` + `approve`), not `attendance`.
+pub const SCOPE_RES_TIMESHEET: &str = "timesheet";
 
 /// The caller’s employee row fields needed for `TEAM` / `DEPARTMENT` list filters.
 #[derive(Debug, Clone, Copy)]

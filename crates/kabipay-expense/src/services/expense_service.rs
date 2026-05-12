@@ -4,6 +4,9 @@ use chrono::{Datelike, NaiveDate, Utc};
 use kabipay_common::client_data_scope::EmployeeScopeFilter;
 use kabipay_common::workflow_approval;
 use kabipay_common::workflow_current_step;
+use kabipay_common::workflow_inbox::{
+    self, NoWorkflowInstanceGate, WorkflowActorCheckMode,
+};
 use kabipay_common::{KabiPayError, KabiPayResult};
 use kabipay_db_entities::tenant::d0005_auth_rbac::user_role;
 use kabipay_db_entities::tenant::d0007_employee_core::employee;
@@ -311,28 +314,8 @@ pub async fn resolve_expense_pending_approval_stage(
     status: &str,
     workflow_instance_id: Option<Uuid>,
 ) -> KabiPayResult<Option<String>> {
-    if status.trim().to_ascii_uppercase() != STATUS_PENDING {
-        return Ok(None);
-    }
-    let Some(inst_id) = workflow_instance_id else {
-        return Ok(None);
-    };
-    let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
-        .filter(workflow_instance::Column::TenantId.eq(tenant_id))
-        .one(db)
-        .await?
-    else {
-        return Ok(None);
-    };
-    if inst.status.trim().to_ascii_uppercase() != WF_STATUS_IN_PROGRESS {
-        return Ok(None);
-    }
-    let Some(step) =
-        workflow_current_step::resolve_logical_current_workflow_step(db, tenant_id, &inst).await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(step.step_name))
+    workflow_inbox::pending_workflow_step_title(db, tenant_id, status, STATUS_PENDING, workflow_instance_id)
+        .await
 }
 
 /// Whether **this** user satisfies the workflow step actor rule or legacy **`expense:approve`** on claims without workflows.
@@ -344,53 +327,21 @@ pub async fn expense_viewer_may_approve(
     subject_employee_id: Uuid,
     workflow_instance_id: Option<Uuid>,
 ) -> KabiPayResult<bool> {
-    if status.trim().to_ascii_uppercase() != STATUS_PENDING {
-        return Ok(false);
-    }
-    match workflow_instance_id {
-        None => {
-            workflow_approval::user_has_permission_via_roles(
-                db,
-                tenant_id,
-                viewer_user_id,
-                "expense",
-                "approve",
-            )
-            .await
-        }
-        Some(inst_id) => {
-            let Some(inst) = workflow_instance::Entity::find_by_id(inst_id)
-                .filter(workflow_instance::Column::TenantId.eq(tenant_id))
-                .one(db)
-                .await?
-            else {
-                return Ok(false);
-            };
-            if inst.status.trim().to_ascii_uppercase() != WF_STATUS_IN_PROGRESS {
-                return Ok(false);
-            }
-            let Some(step) = workflow_current_step::resolve_logical_current_workflow_step(
-                db,
-                tenant_id,
-                &inst,
-            )
-            .await?
-            else {
-                return Ok(false);
-            };
-            Ok(
-                workflow_approval::assert_workflow_step_actor(
-                    db,
-                    tenant_id,
-                    viewer_user_id,
-                    subject_employee_id,
-                    &step,
-                )
-                .await
-                .is_ok(),
-            )
-        }
-    }
+    workflow_inbox::viewer_may_approve_pending_row(
+        db,
+        tenant_id,
+        viewer_user_id,
+        subject_employee_id,
+        status,
+        STATUS_PENDING,
+        workflow_instance_id,
+        WorkflowActorCheckMode::Standard,
+        NoWorkflowInstanceGate::ResourceAction {
+            resource: "expense",
+            action: "approve",
+        },
+    )
+    .await
 }
 
 pub const PAYMENT_STATUS_NONE: &str = "NONE";

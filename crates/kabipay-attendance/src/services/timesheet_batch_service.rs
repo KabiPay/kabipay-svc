@@ -5,6 +5,11 @@ use kabipay_common::{
     client_data_scope::EmployeeScopeFilter,
     workflow_approval,
     workflow_current_step,
+    workflow_inbox::{
+        self,
+        NoWorkflowInstanceGate,
+        WorkflowActorCheckMode,
+    },
     KabiPayError, KabiPayResult,
 };
 use kabipay_db_entities::tenant::d0010_time_shift_roster::{timesheet_entry, timesheet_week_batch};
@@ -301,7 +306,7 @@ pub async fn approve_timesheet_week_batch(
             .await?
             .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
 
-        workflow_approval::assert_workflow_step_actor(
+        workflow_approval::assert_workflow_step_actor_with_timesheet_reporting_manager_fallback(
             &txn,
             tenant_id,
             approver_user_id,
@@ -418,7 +423,7 @@ pub async fn reject_timesheet_week_batch(
                         .one(&txn)
                         .await?
                         .ok_or_else(|| KabiPayError::Validation("workflow step not found".into()))?;
-                    workflow_approval::assert_workflow_step_actor(
+                    workflow_approval::assert_workflow_step_actor_with_timesheet_reporting_manager_fallback(
                         &txn,
                         tenant_id,
                         rejector_user_id,
@@ -517,4 +522,47 @@ pub async fn list_timesheet_week_batches(
         .all(db)
         .await
         .map_err(KabiPayError::from)
+}
+
+pub const BATCH_PENDING_STATUS: &str = "PENDING";
+
+pub async fn resolve_timesheet_pending_approval_stage(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    status: &str,
+    workflow_instance_id: Option<Uuid>,
+) -> KabiPayResult<Option<String>> {
+    workflow_inbox::pending_workflow_step_title(
+        db,
+        tenant_id,
+        status,
+        BATCH_PENDING_STATUS,
+        workflow_instance_id,
+    )
+    .await
+}
+
+pub async fn timesheet_week_batch_viewer_may_approve(
+    db: &DatabaseConnection,
+    tenant_id: Uuid,
+    viewer_user_id: Uuid,
+    status: &str,
+    subject_employee_id: Uuid,
+    workflow_instance_id: Option<Uuid>,
+) -> KabiPayResult<bool> {
+    workflow_inbox::viewer_may_approve_pending_row(
+        db,
+        tenant_id,
+        viewer_user_id,
+        subject_employee_id,
+        status,
+        BATCH_PENDING_STATUS,
+        workflow_instance_id,
+        WorkflowActorCheckMode::TimesheetReportingManagerFallback,
+        NoWorkflowInstanceGate::ResourceAction {
+            resource: "timesheet",
+            action: "approve",
+        },
+    )
+    .await
 }

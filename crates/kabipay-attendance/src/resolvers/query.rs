@@ -6,7 +6,7 @@ use kabipay_common::{
     client_data_scope::{
         data_scope_from_context, resolve_employee_scope_filter, resolve_viewer_employee,
     },
-    context::SCOPE_RES_ATTENDANCE,
+    context::{SCOPE_RES_ATTENDANCE, SCOPE_RES_TIMESHEET},
     subgraph::{require_client_claims, require_tenant_id, resolve_client_employee_id, tenant_db},
     KabiPayError,
 };
@@ -300,7 +300,9 @@ impl QueryRoot {
             .into_graphql());
         }
         let db = tenant_db(ctx, tenant_id).await?;
-        let scope = data_scope_from_context(ctx, SCOPE_RES_ATTENDANCE);
+        // Use `timesheet` resource so JWT `resource_scopes` matches `permission_scope` (e.g. LINE_MANAGER TEAM).
+        // `attendance` defaults to Self for managers and would hide direct reports' batches.
+        let scope = data_scope_from_context(ctx, SCOPE_RES_TIMESHEET);
         let viewer = resolve_viewer_employee(ctx, &db, tenant_id).await?;
         let filt = resolve_employee_scope_filter(&db, tenant_id, scope, viewer)
             .await
@@ -359,7 +361,7 @@ impl QueryRoot {
     }
 }
 
-fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
+pub(crate) fn parse_uuid(id: &ID, field: &'static str) -> Result<Uuid> {
     Uuid::parse_str(id.as_str())
         .map_err(|e| KabiPayError::Validation(format!("invalid {field}: {e}")).into_graphql())
 }

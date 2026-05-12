@@ -26,11 +26,12 @@ pub mod telemetry;
 pub mod tenant_seed;
 pub mod workflow_approval;
 pub mod workflow_current_step;
+pub mod workflow_inbox;
 
 pub use context::{
     ClientContext, ClientRequestHints, ClientViewerEmployee, OperatorContext, ScopeType,
     PERM_ATTENDANCE_PUNCH_POLICY, PERM_EMPLOYEE_MANAGE, PERM_EMPLOYEE_WRITE, SCOPE_RES_ATTENDANCE,
-    SCOPE_RES_EMPLOYEE, SCOPE_RES_EXPENSE, SCOPE_RES_LEAVE,
+    SCOPE_RES_EMPLOYEE, SCOPE_RES_EXPENSE, SCOPE_RES_LEAVE, SCOPE_RES_TIMESHEET,
 };
 pub use env_file::load_dotenv;
 pub use error::{KabiPayError, KabiPayResult};

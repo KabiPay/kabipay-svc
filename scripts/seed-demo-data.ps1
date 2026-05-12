@@ -1442,8 +1442,9 @@ INSERT INTO "$Schema".workflow_step (
     id, tenant_id, workflow_id, sequence_order, step_name,
     approver_type, approver_role_id, can_skip, sla_hours
 ) VALUES (
-    '$TimesheetWorkflowStep1Id', '$TenantId', '$TimesheetWorkflowId', 1, 'Reporting manager',
-    'REPORTING_MANAGER', NULL, false, NULL
+    '$TimesheetWorkflowStep1Id', '$TenantId', '$TimesheetWorkflowId', 1,
+    'Reporting manager or HR',
+    'REPORTING_MANAGER_OR_ROLE', '$RoleHrAdminId', false, NULL
 ) ON CONFLICT (id) DO UPDATE SET
     sequence_order = EXCLUDED.sequence_order,
     step_name = EXCLUDED.step_name,
@@ -1453,20 +1454,12 @@ INSERT INTO "$Schema".workflow_step (
     sla_hours = EXCLUDED.sla_hours,
     updated_at = NOW();
 
-INSERT INTO "$Schema".workflow_step (
-    id, tenant_id, workflow_id, sequence_order, step_name,
-    approver_type, approver_role_id, can_skip, sla_hours
-) VALUES (
-    '$TimesheetWorkflowStep2Id', '$TenantId', '$TimesheetWorkflowId', 2, 'HR verification',
-    'ROLE', '$RoleHrAdminId', false, NULL
-) ON CONFLICT (id) DO UPDATE SET
-    sequence_order = EXCLUDED.sequence_order,
-    step_name = EXCLUDED.step_name,
-    approver_type = EXCLUDED.approver_type,
-    approver_role_id = EXCLUDED.approver_role_id,
-    can_skip = EXCLUDED.can_skip,
-    sla_hours = EXCLUDED.sla_hours,
-    updated_at = NOW();
+-- Single-step timesheet approval: remove legacy HR-only second step (avoid RESTRICT FK failures).
+DELETE FROM "$Schema".workflow_action
+WHERE tenant_id = '$TenantId' AND workflow_step_id = '$TimesheetWorkflowStep2Id';
+
+DELETE FROM "$Schema".workflow_step
+WHERE tenant_id = '$TenantId' AND id = '$TimesheetWorkflowStep2Id';
 "@
 Invoke-TenantSql -Label "0025 workflow (workflow + instance)" -Sql $SqlWorkflow
 
